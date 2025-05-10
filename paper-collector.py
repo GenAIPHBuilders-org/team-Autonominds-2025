@@ -1,21 +1,26 @@
+# Libraries and Packages
 import os
 import time
 import random
 from dotenv import load_dotenv
 from google import genai
-# import requests
+import requests
 import feedparser
 
+# Load API Key
 load_dotenv()
 api_key = os.getenv("GEMINI_API_KEY")
 client = genai.Client(api_key=api_key)
+
+# Constant Variables
+paper_per_keyword = 3
 
 ### TWO-LAYERED KEYWORD EXTRACTION ###
 
 # Layer 1 | Title-to-Topic Mapping
 def generate_topics(title):
     prompt = f"""You are an expert academic research assistant.
-Given a research title, generate a list of 1-3 most relevant and meaningful academic topics associated with it.
+Given a research title, generate a list of 3-5 most relevant and meaningful academic topics associated with it.
 Your output should include a mix of core, adjacent, and emerging topics that could appear in academic journals.
 Prioritize conceptual breadth, domain relevance, and interdisciplinary connections.
 
@@ -52,7 +57,7 @@ Use a mix of short and phrase-based keywords (3–5 words max per phrase).
 
 Do not include any punctuation other than the separating commas.
 
-Return exactly 3 to 5 keywords."""
+Return exactly 5 to 10 keywords."""
         
         response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
         keywords = response.text.strip().replace('\n', '').split(", ")
@@ -66,8 +71,7 @@ def search_arxiv(keyword):
     try:
         results = []
         
-        safe_keyword = keyword.replace(" ", "%20")
-        query = f"http://export.arxiv.org/api/query?search_query=all:{safe_keyword}&start=0&max_results=3"
+        query = f"http://export.arxiv.org/api/query?search_query=all:{keyword.replace(" ", "%20")}&start=0&max_results=3"
         feed = feedparser.parse(query)
         
         for entry in feed.entries:
@@ -85,6 +89,18 @@ def search_arxiv(keyword):
         
         return []
 
+def search_semantic_scholar(keyword):
+    try:
+        url = "https://api.semanticscholar.org/graph/v1/paper/search"
+        params = {"query": keyword, "limit": 3, "fields": "title,authors,abstract,url,year"}
+        
+        response = requests.get(url, params=params)
+        
+        return response.json().get("data", [])
+    except Exception as e:
+        print(f"Semantic Scholar error: {e}")
+        return []
+
 def collect_papers(keywords_by_topic):
     papers = []
     
@@ -94,7 +110,9 @@ def collect_papers(keywords_by_topic):
         for keyword in keywords:
             print(f"    → Using keyword: {keyword}")
             papers += search_arxiv(keyword)
-            time.sleep(random.uniform(0.5, 1.5))
+            # time.sleep(random.uniform(0.5, 1.5))
+            papers += search_semantic_scholar(keyword)
+            # time.sleep(random.uniform(0.5, 1.5))
             
     return papers
 
@@ -113,8 +131,8 @@ if __name__ == "__main__":
     papers = collect_papers(keywords_by_topic)
     
     print(f"\n📄 Found {len(papers)} total papers.\n")
-    for i, paper in enumerate(papers):
+    for i, paper in enumerate(papers):        
         print(f"{i+1}. {paper.get('title', 'No title')}")
         print(f"    URL: {paper.get('url', '')}")
         print(f"    Year: {paper.get('year', 'N/A')}")
-        print(f"    Abstract: {paper.get('abstract', '')[:300]}...\n")
+        print(f"    Abstract: {(paper.get('abstract') or '')[:300]}...\n")
