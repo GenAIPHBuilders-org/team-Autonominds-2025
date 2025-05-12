@@ -1,0 +1,28 @@
+AUTHEMATIC CHANGELOG
+
+(5/10 - 5/11)
+- changed filename of "paper-collector.py" to "paper_collector.py"
+- changed the url attribute of papers to doi
+- "paper_collector.py" now outputs a "raw_candidates.json" which contains every paper searched for, and the title inputted by the user (for future use)
+- "paper_collector.py" now filters the year before writing to the json file, and retries if the found paper is not within the year cutoff
+- added a "run-pipeline.py", a script that orchestrates the modules from "paper_collector.py" and future scripts. Made for clarity and readability. For testing, just run this file.
+- added "filter_and_rank.py", which contains the filtering and ranking functions
+- "filter_and_rank.py" filters no abstracts, no doi, and duplicate papers.
+- "raw_candidates.json" is refreshed every time you run "run-pipeline.py"
+- implemented functions for semantic ranking with TF-IDF and a SciBERT ranking, but default is SciBERT (more compute, more accurate)(might change).
+- implemented a domain keyword generation in "paper_collector.py", which is dumped in the json. This is used in filtering the top N results
+- top N results is by default 30 after semantic ranking with SciBERT.
+- Implemented a "focused" and "exploratory" split to the top 30. Default split is 20:10. (pwedeng gawing configurable in the future)
+
+(5/12)
+- implemented more advanced ranking adjustments, including better filters, fallbacks, tiers in filters, and semantic boosting
+
+
+NOTES/ISSUES:
+- run pipeline script dumps the json that is already filtered, but paper collector dumps an unfiltered json of the same name
+- general papers appear in focused list (refine gemini prompt)
+
+CONFIGURABLES
+- depth vs breadth through slider
+- Choose citation style
+- Choose year cutoff
