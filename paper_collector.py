@@ -1,11 +1,11 @@
 # Libraries and Packages
 import os
-import time
-import random
 from typing import List
 from dotenv import load_dotenv
 from google import genai
+import time
 import requests
+import re
 import feedparser
 import json
 from pathlib import Path
@@ -172,7 +172,158 @@ def search_semantic_scholar(keyword, offset=0):
         print(f"Semantic Scholar error: {e}")
         return []
 
-def collect_papers(keywords_by_topic, cutoff_year: int):
+def search_crossref(keyword, offset=0):
+    try:
+        url = "https://api.crossref.org/works"
+        params = {
+            "query": keyword,
+            "rows": paper_per_keyword,
+            "offset": offset,
+            "sort": "relevance",
+            "order": "desc"
+        }
+        
+        # Add a polite email to improve rate limits as per Crossref guidelines
+        headers = {
+            "User-Agent": "LiteratureRetrievalApp/1.0 (mailto:vhienanutafeu@gmail.com)"
+        }
+        
+        response = requests.get(url, params=params, headers=headers)
+        
+        if response.status_code != 200:
+            print(f"Crossref error: Status code {response.status_code}")
+            return []
+        
+        items = response.json().get("message", {}).get("items", [])
+        results = []
+        
+        for item in items:
+            # Parse year
+            published = item.get("published-print") or item.get("published-online")
+            year = 0
+            if published and "date-parts" in published:
+                date_parts = published["date-parts"][0]
+                if date_parts:
+                    year = date_parts[0]
+                    
+            # Parse authors
+            authors = []
+            for author in item.get("author", []):
+                parts = []
+                if "given" in author:
+                    parts.append(author["given"])
+                if "family" in author:
+                    parts.append(author["family"])
+                if parts:
+                    authors.append(" ".join(parts))
+                    
+            # Format DOI
+            doi = item.get("DOI", "")
+            if doi and not doi.startswith("https://doi.org/"):
+                doi = "https://doi.org/" + doi
+                
+            results.append({
+                "title": item.get("title", [""])[0] if item.get("title") else "",
+                "authors": authors,
+                "abstract": item.get("abstract", ""),  # Note: might be in JATS XML
+                "doi": doi,
+                "year": year,
+                "source": "Crossref"
+            })
+            
+        return results
+    
+    except Exception as e:
+        print(f"Crossref error: {e}")
+        return []
+
+def search_pubmed(keyword, offset=0):
+    try:
+        # First, search for paper IDs
+        search_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+        search_params = {
+            "db": "pubmed",
+            "term": keyword,
+            "retmode": "json",
+            "retstart": offset,
+            "retmax": paper_per_keyword,
+            "sort": "relevance"
+        }
+        
+        search_response = requests.get(search_url, params=search_params)
+        if search_response.status_code != 200:
+            print(f"PubMed search error: Status code {search_response.status_code}")
+            return []
+            
+        search_data = search_response.json()
+        pmids = search_data.get("esearchresult", {}).get("idlist", [])
+        
+        if not pmids:
+            return []
+        
+        # Then fetch details for those IDs
+        fetch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
+        fetch_params = {
+            "db": "pubmed",
+            "id": ",".join(pmids),
+            "retmode": "json"
+        }
+        
+        fetch_response = requests.get(fetch_url, params=fetch_params)
+        if fetch_response.status_code != 200:
+            print(f"PubMed fetch error: Status code {fetch_response.status_code}")
+            return []
+            
+        fetch_data = fetch_response.json()
+        results = []
+        
+        for pmid in pmids:
+            article = fetch_data.get("result", {}).get(pmid, {})
+            if not article:
+                continue
+                
+            # Extract publication year
+            pub_date = article.get("pubdate", "")
+            year = 0
+            if pub_date:
+                # Try to extract year from various date formats
+                year_match = re.search(r'\b(19|20)\d{2}\b', pub_date)
+                if year_match:
+                    year = int(year_match.group(0))
+            
+            # Extract authors
+            authors = []
+            for author in article.get("authors", []):
+                if "name" in author:
+                    authors.append(author["name"])
+            
+            # For abstract, we need a separate API call
+            # For simplicity, we're not fetching abstracts here
+            # In a production app, you might want to add that
+            
+            # Construct DOI if available
+            doi = article.get("elocationid", "")
+            if doi and doi.startswith("doi:"):
+                doi = "https://doi.org/" + doi[4:]
+            else:
+                # Use PubMed URL as fallback
+                doi = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
+            
+            results.append({
+                "title": article.get("title", ""),
+                "authors": authors,
+                "abstract": "",  # Would require additional API call
+                "doi": doi,
+                "year": year,
+                "source": "PubMed"
+            })
+            
+        return results
+    except Exception as e:
+        print(f"PubMed error: {e}")
+        return []
+
+def collect_papers(keywords_by_topic, cutoff_year: int = 2020):
     """
     For each (topic → keywords), gather up to `paper_per_keyword` papers PER keyword PER source,
     filtering out any with year < cutoff_year, retrying up to max_fetch_attempts.
@@ -196,7 +347,7 @@ def collect_papers(keywords_by_topic, cutoff_year: int):
                 if len(valid) >= paper_per_keyword:
                     break
                 attempt += 1
-
+                
             # --- Semantic Scholar with retry & cutoff ---
             attempt = 0
             while attempt < max_fetch_attempts:
@@ -207,8 +358,30 @@ def collect_papers(keywords_by_topic, cutoff_year: int):
                 if len(valid) >= paper_per_keyword:
                     break
                 attempt += 1
-
-    return papers            
+                
+            # --- Crossref with retry & cutoff ---
+            attempt = 0
+            while attempt < max_fetch_attempts:
+                offset = attempt * paper_per_keyword
+                candidates = search_crossref(keyword, offset=offset)
+                valid = [p for p in candidates if p.get("year", 0) >= cutoff_year]
+                papers.extend(valid)
+                if len(valid) >= paper_per_keyword:
+                    break
+                attempt += 1
+                
+            # --- PubMed with retry & cutoff ---
+            attempt = 0
+            while attempt < max_fetch_attempts:
+                offset = attempt * paper_per_keyword
+                candidates = search_pubmed(keyword, offset=offset)
+                valid = [p for p in candidates if p.get("year", 0) >= cutoff_year]
+                papers.extend(valid)
+                if len(valid) >= paper_per_keyword:
+                    break
+                attempt += 1
+                
+    return papers
             
 def generate_domain_terms(title: str, max_terms: int = 10) -> List[str]:
     """
@@ -309,15 +482,19 @@ def generate_tech_terms(title: str, max_terms: int = 5) -> List[str]:
 
 if __name__ == "__main__":
     title = input("Enter research title: ")
-    
+
+    start_time = time.time()
+
     related_topics = generate_topics(title)
     keywords_by_topic = generate_keywords(related_topics)
     
     print("\n🔑 Generated Keywords:")
     for topic, keywords in keywords_by_topic.items():
         print(f"\n{topic}: {keywords}")
-        
+    
     papers = collect_papers(keywords_by_topic)
+    
+    end_time = time.time()
     
     out_path = Path("raw_candidates.json")
     # Wrap with the query title
@@ -332,6 +509,13 @@ if __name__ == "__main__":
     print(f"\n📄 Found {len(papers)} total papers.\n")
     for i, paper in enumerate(papers):        
         print(f"{i+1}. {paper.get('title', 'No title')}")
+        print(f"    Source: {paper.get('source', '')}") # for testing purposes
         print(f"    DOI: {paper.get('doi', '')}")
         print(f"    Year: {paper.get('year', 'N/A')}")
         print(f"    Abstract: {(paper.get('abstract') or '')[:300]}...\n")
+        
+    elapsed_time = end_time - start_time
+    minutes = int(elapsed_time // 60)
+    seconds = int(elapsed_time % 60)
+    
+    print(f"\n\nPaper collection took {minutes} min {seconds} sec.")
