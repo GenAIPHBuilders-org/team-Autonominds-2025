@@ -1,10 +1,15 @@
 import json
 import sys
 from pathlib import Path
-from typing import List
+from typing import Dict, List
+import time
+from embeddings import embed_text
+from sklearn.cluster import KMeans
+import numpy as np
+
 
 # Import your modules
-from paper_collector import generate_topics, generate_keywords, collect_papers
+from paper_collector import generate_topics, generate_keywords, collect_papers, generate_subthemes, generate_keywords_by_subtheme
 from filter_and_rank import (
     load_candidates_from_json,
     filter_by_doi,
@@ -32,6 +37,8 @@ STOP_TIER2 = {
     "method", "methods", "approach", "approaches",
     "algorithm", "algorithms", "technique", "techniques",
 }
+
+MAX_TECH_BOOSTS = 5
 
 #cleaner helper
 
@@ -77,12 +84,61 @@ def main():
     # 1.3. Citation style (for future formatting)
     citation_style = input("Enter citation style (e.g. APA): ").strip() or "APA"
     
+    # ─────────────────────────────────────────────────────
+    # Start timing from here (all inputs collected)
+    start_time = time.time()
+    # ─────────────────────────────────────────────────────
+    
     # 2. Collect & dump raw JSON
-    related_topics = generate_topics(title)
-    keywords_by_topic = generate_keywords(related_topics)
+    related_topics     = generate_topics(title)
+    subthemes_by_topic = generate_subthemes(related_topics, max_subthemes=3)
+    keywords_by_topic  = generate_keywords_by_subtheme(subthemes_by_topic, max_terms=5)
     if len(related_topics) != 4:
         print(f"⚠️ Warning: expected 4 topics, got {len(related_topics)}")
-    papers = collect_papers(keywords_by_topic, cutoff_year)
+    
+    # --- BEGIN DEBUG ---
+    print("\n--- DEBUGGING: Right before calling collect_papers ---")
+    # Replace 'keywords_by_subtheme_data_for_collection' with the actual variable name you use
+    actual_data_passed = keywords_by_topic # Or whatever your variable is named
+
+    print(f"Variable name being passed to collect_papers: keywords_by_subtheme (in run_pipeline.py)")
+    print(f"Type of this variable: {type(actual_data_passed)}")
+
+    if isinstance(actual_data_passed, dict) and actual_data_passed:
+        first_topic_key = list(actual_data_passed.keys())[0]
+        print(f"First key (topic): '{first_topic_key}'")
+        value_for_first_topic = actual_data_passed[first_topic_key]
+        print(f"Type of value for first topic: {type(value_for_first_topic)}")
+        print(f"Value for first topic: {value_for_first_topic}")
+
+        if isinstance(value_for_first_topic, dict) and value_for_first_topic:
+            first_subtheme_key = list(value_for_first_topic.keys())[0]
+            print(f"  First subtheme key under this topic: '{first_subtheme_key}'")
+            keywords_for_first_subtheme = value_for_first_topic[first_subtheme_key]
+            print(f"  Type of keywords for this subtheme: {type(keywords_for_first_subtheme)}")
+            print(f"  Keywords for this subtheme: {keywords_for_first_subtheme}")
+    print("--- END DEBUG ---\n")
+    
+    paper_per_keyword = 3
+    
+    # `subthemes_by_topic` is {topic: [sub1, sub2, sub3], …}
+    # `keywords_by_topic` is still {topic: [kw1, kw2, …], …}
+
+    # Build a flat mapping of each *sub-theme* → its keywords:
+    keywords_by_subtheme: Dict[str,List[str]] = {}
+    for topic, subs in subthemes_by_topic.items():
+        for sub in subs:
+            # you need a small helper to invert your earlier keywords_by_topic:
+            keywords_by_subtheme[sub] = [
+                kw for kw in keywords_by_topic[topic] if sub.lower() in kw.lower()
+            ] or keywords_by_topic[topic]  # fallback if none
+
+    # now collect with quotas PER SUB-THEME
+    papers = collect_papers(
+        keywords_by_topic,
+        cutoff_year=cutoff_year,
+        paper_per_keyword=paper_per_keyword  # your per-bucket fetch cap
+    )
 
     out_path = Path("raw_candidates.json")
     # Remove old file if it exists
@@ -134,19 +190,56 @@ def main():
 
     print(f"🔑 Final application terms: {app_terms}")
     print(f"🔑 Final technique terms:   {tech_terms}")
-
-    print(f"🔑 Final application terms: {app_terms}")
-    print(f"🔑 Final technique terms:   {tech_terms}")
     
     # If either list is empty, fallback to original raw lists
     if not app_terms:
         print("⚠️ App terms empty; using raw app extraction")
         app_terms = generate_app_terms(title, max_terms=5)
+        print(f"🔑 Application core terms: {app_terms}")
     if not tech_terms:
         print("⚠️ Tech terms empty; using raw tech extraction")
         tech_terms = generate_tech_terms(title, max_terms=5)
-    print(f"🔑 Application core terms: {app_terms}")
-    print(f"🔑 Technique core terms:   {tech_terms}")
+        print(f"🔑 Technique core terms:   {tech_terms}")
+    
+    
+    # ─── Embed & cluster technique terms ──────────────────────────────────
+    tech_vecs = [embed_text(t, use_cache=True) for t in tech_terms]
+
+    if tech_vecs and len(tech_terms) > 4:
+        import math, numpy as np
+        max_k       = 5
+        n_clusters  = min(max_k, max(2, len(tech_terms)//2))
+        kmeans      = KMeans(n_clusters=n_clusters, random_state=0)
+        labels      = kmeans.fit_predict(np.vstack(tech_vecs))
+
+        cluster_map: dict[int, list[str]] = {}
+        for term, lbl in zip(tech_terms, labels):
+            cluster_map.setdefault(lbl, []).append(term)
+
+        rep_terms: list[str] = []
+
+        for lbl, terms in cluster_map.items():
+            # how many to keep from this cluster?
+            keep_k = max(1, math.ceil(math.sqrt(len(terms))))      # ≤3 when len(terms) ≤9
+            if len(terms) <= keep_k:
+                rep_terms.extend(terms)
+                continue
+
+            # distance to centroid → pick the closest `keep_k`
+            idxs   = [tech_terms.index(t) for t in terms]
+            centre = kmeans.cluster_centers_[lbl]
+            dists  = [(t, np.linalg.norm(tech_vecs[i] - centre)) for t, i in zip(terms, idxs)]
+            dists.sort(key=lambda x: x[1])
+            rep_terms.extend([t for t, _ in dists[:keep_k]])
+
+        tech_terms = rep_terms
+        print("🔑 Technique clusters:")
+        for lbl, terms in cluster_map.items():
+            print(f"    cluster {lbl}: {terms}")
+        print(f"🔑 Representative technique terms (≤√n per cluster): {tech_terms}")
+    else:
+        print("🔑 Technique clustering skipped (≤ 4 terms)")
+
 
     # 7c. Compile regex patterns
     import re
@@ -157,83 +250,110 @@ def main():
     # 3. Rank all papers semantically
     print("Using SciBERT to rank the collected papers...")
     ranked_all = semantic_rank_papers(query_title, papers, top_n=len(papers))
-    # 3a. determine boost terms
-    print("Determining which terms to boost...")
     
-    # 1. Infer which terms most distinguish the initial Top-K
-    inferred_terms = infer_boost_terms(
-        ranked_all, domain_terms, top_k=20, multiplier_threshold=1.5
-    )
-    print(f"🔍 Inferred lift terms: {inferred_terms}")
+    # 3a. Core ∧ Tech boost
+    print("Applying Core ∧ Tech boost…")
 
-    # 2. First try to boost on technique phrases
-    boost_terms = [t for t in inferred_terms if t in tech_terms]
-
-    # 3. If that’s empty, fall back to the LLM’s own technique suggestions
-    if not boost_terms:
-        print("⚡ No inferred tech_terms; falling back to LLM's top tech_raw")
-        boost_terms = tech_raw[:3]
-
-    # 4. If still empty, use the top 3 inferred lift terms
-    if not boost_terms:
-        print("⚡ Still no boost_terms; using top inferred lift terms")
-        boost_terms = inferred_terms[:3]
-
-    print(f"⚡ Final boost terms: {boost_terms}")
-
-    # 5. Compile regexes for those boost terms
+    # Compile regexes for core (app) and tech terms
     import re
-    boost_patterns = [
+    core_patterns = [
         re.compile(rf"\b{re.escape(t)}\b", re.IGNORECASE)
-        for t in boost_terms
+        for t in app_terms
+    ]
+    tech_patterns = [
+        re.compile(rf"\b{re.escape(t)}\b", re.IGNORECASE)
+        for t in tech_terms
     ]
 
-    # 6. Apply the boost multiplier
-    for p in ranked_all:
-        txt = f"{p['title']} {p['abstract']}".lower()
-        if any(bp.search(txt) for bp in boost_patterns):
-            p["score"] *= 1.10
-
-    # 7. Re-sort by updated scores
-    ranked_all.sort(key=lambda x: x["score"], reverse=True)
-
-    # 4. Dual-match Focused filter: must match both core and domain
-    print("Categorizing top hits to focused and exploratory domains...")
-    focused = []
+    # Apply a 25% boost only when a paper matches BOTH a core and a tech term
     for p in ranked_all:
         text = f"{p['title']} {p['abstract']}".lower()
-        if any(pat.search(text) for pat in app_patterns) and any(pat.search(text) for pat in tech_patterns):
-            focused.append(p)
+        if any(cp.search(text) for cp in core_patterns) and any(tp.search(text) for tp in tech_patterns):
+            p["score"] *= 1.25
+            continue
+        elif any(cp.search(text) for cp in core_patterns) and any(tp.search(text) for tp in tech_patterns):
+            #if either, 10% boost
+            p["score"] *= 1.10
 
-    # 5. Fallback if too few focused hits
+    # Re-sort after boosting
+    ranked_all.sort(key=lambda x: x["score"], reverse=True)
+
+
+    # helper closures for readability
+    def matches_app(p):
+        txt = (p["title"] + " " + p["abstract"]).lower()
+        return any(pat.search(txt) for pat in app_patterns)
+
+    def matches_tech(p):
+        txt = (p["title"] + " " + p["abstract"]).lower()
+        return any(pat.search(txt) for pat in tech_patterns)
+
+    def domain_hits(p):
+        txt = (p["title"] + " " + p["abstract"]).lower()
+        return sum(bool(dp.search(txt)) for dp in domain_patterns)
+
+    print("Categorizing top hits to focused and exploratory domains…")
+
     DESIRED_FOCUSED = 20
+
+    # ─── FOCUSED ─────────────────────────────────────────────────────────────
+    focused = []
+
+    # Tier 1: must hit at least one app, one tech, AND one domain term
+    for p in ranked_all:
+        if matches_app(p) and matches_tech(p) and domain_hits(p) >= 1:
+            focused.append(p)
+        if len(focused) >= DESIRED_FOCUSED:
+            break
+
+    # Tier 2 (fallback 1): if still short, relax to app AND tech only
     if len(focused) < DESIRED_FOCUSED:
-        print(f"⚠️ Only {len(focused)} app+tech matches; filling with app+tech fallback")
-        seen = {p["doi"] for p in focused}
-        needed = DESIRED_FOCUSED - len(focused)
-        fallback = []
         for p in ranked_all:
-            if p["doi"] in seen:
+            if p in focused: 
                 continue
-            txt = (p["title"] + " " + p["abstract"]).lower()
-            # require BOTH gates
-            if any(ap.search(txt) for ap in app_patterns) and any(tp.search(txt) for tp in tech_patterns):
-                fallback.append(p)
-            if len(fallback) == needed:
+            if matches_app(p) and matches_tech(p):
+                focused.append(p)
+            if len(focused) >= DESIRED_FOCUSED:
                 break
-        focused += fallback
+
+    # Tier 3 (fallback 2): if still short, require domain AND (app OR tech)
+    if len(focused) < DESIRED_FOCUSED:
+        for p in ranked_all:
+            if p in focused: 
+                continue
+            if domain_hits(p) >= 1 and (matches_app(p) or matches_tech(p)):
+                focused.append(p)
+            if len(focused) >= DESIRED_FOCUSED:
+                break
 
     focused_top20 = focused[:DESIRED_FOCUSED]
     focused_dois   = {p["doi"] for p in focused_top20}
 
-
-    # 6. Exploratory: papers not in Focused but matching any domain term
+    # ─── EXPLORATORY ─────────────────────────────────────────────────────────
     noncore = [p for p in ranked_all if p["doi"] not in focused_dois]
-    exploratory = [
-        p for p in noncore
-        if any(dp.search(f"{p['title']} {p['abstract']}") for dp in domain_patterns)
-    ]
+    exploratory = []
+
+    # Tier 1: require either ≥2 domain hits OR (≥1 domain AND ≥1 tech)
+    for p in noncore:
+        if domain_hits(p) >= 2 or (domain_hits(p) >= 1 and matches_tech(p)):
+            exploratory.append(p)
+        if len(exploratory) >= 10:
+            break
+
+    # Tier 2 (fallback): if still short, require ≥1 domain hit
+    if len(exploratory) < 10:
+        needed = 10 - len(exploratory)
+        for p in noncore:
+            if p in exploratory: 
+                continue
+            if domain_hits(p) >= 1:
+                exploratory.append(p)
+            if len(exploratory) >= 10:
+                break
+
     exploratory_top10 = exploratory[:10]
+
+
 
     # 7. Print the two blocks
     print(f"\n🏆 Focused Top {len(focused_top20)} (application & domain match):")
@@ -244,10 +364,9 @@ def main():
     for i, p in enumerate(exploratory_top10, 1):
         print(f"{i}. {p['title']} ({p['year']}) — score {p['score']:.4f} — DOI: {p['doi']}")
 
-    # print(f"\n🏆 Top {top_n} papers by relevance:")
-    # for idx, p in enumerate(ranked, start=1):
-    #     score = p.get("score", 0.0)
-    #     print(f"{idx}. {p['title']} ({p['year']}) — score: {score:.4f} — DOI: {p['doi']}")
+    # Log elapsed time up to ranking completion
+    elapsed = time.time() - start_time
+    print(f"\n⏱️  Pipeline elapsed time (inputs → ranking): {elapsed:.2f} seconds\n")
 
 if __name__ == "__main__":
     main()
