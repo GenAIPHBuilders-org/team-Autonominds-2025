@@ -6,10 +6,13 @@ import time
 from embeddings import embed_text
 from sklearn.cluster import KMeans
 import numpy as np
+from dotenv import load_dotenv
+env_path = Path('.') / '.env'
+load_dotenv(dotenv_path=env_path)
 
 
-# Import your modules
-from paper_collector import generate_topics, generate_keywords, collect_papers, generate_subthemes, generate_keywords_by_subtheme
+# Import modules
+from paper_collector import generate_topics, generate_keywords, collect_papers, generate_subthemes, generate_keywords_by_subtheme, generate_domain_terms
 from filter_and_rank import (
     load_candidates_from_json,
     filter_by_doi,
@@ -17,8 +20,9 @@ from filter_and_rank import (
     dedupe_by_doi,
     semantic_rank_papers,
     infer_boost_terms
-    # future imports: filter_by_year, dedupe_by_doi, rank_papers
 )
+#critique modules
+from keyword_critic import critique_list, critique_map
 
 # List of stop terms
 METHODOLOGY_STOP_TERMS = {
@@ -72,11 +76,6 @@ def main():
         title = " ".join(sys.argv[1:])
     else:
         title = input("Enter research title: ")
-        
-    # 1a. Generate domain terms via Gemini
-    from paper_collector import generate_domain_terms
-    domain_terms = generate_domain_terms(title, max_terms=10)
-    print(f"🔑 Domain terms: {domain_terms}")
 
     # 1.2. Cutoff year
     cutoff_year = prompt_cutoff_year()
@@ -92,14 +91,46 @@ def main():
     # 2. Collect & dump raw JSON
     related_topics     = generate_topics(title)
     subthemes_by_topic = generate_subthemes(related_topics, max_subthemes=3)
-    keywords_by_topic  = generate_keywords_by_subtheme(subthemes_by_topic, max_terms=5)
+    raw_keywords = generate_keywords_by_subtheme(subthemes_by_topic, max_terms=5)
+
+    # apply critique_list to each inner list, preserve topic→subtheme→[kw…] shape
+    all_candidates = []
+    for subs_map_in_raw in raw_keywords.values(): # Corrected iteration
+        for kw_list_val in subs_map_in_raw.values(): # Corrected iteration
+            all_candidates.extend(kw_list_val)
+
+
+    # now critique each sub-theme list against that pool
+    keywords_by_topic_critiqued = {} # Renaming for clarity
+    for topic, subs_map in raw_keywords.items(): # subs_map is {"Subtheme": [original_kw_list]}
+        refined_subthemes_map = {}
+        for subtheme, original_kw_list_for_subtheme in subs_map.items():
+            # Create a proper label for the critic
+            critic_label = f"Keywords for topic '{topic}' under subtheme '{subtheme}'"
+
+            # Critique the specific list of keywords for THIS subtheme
+            refined_list, suggestions_map = critique_list(
+                critic_label,                   # The string label
+                original_kw_list_for_subtheme   # The list of keywords to be critiqued
+            )
+            refined_subthemes_map[subtheme] = refined_list
+        keywords_by_topic_critiqued[topic] = refined_subthemes_map
+
+    # After this, keywords_by_topic_critiqued should have the correct
+    # nested structure: {"Topic": {"Subtheme": [refined_kws_for_subtheme]}}
+    print("✅ Sub-theme keywords refined via critic.")
     if len(related_topics) != 4:
         print(f"⚠️ Warning: expected 4 topics, got {len(related_topics)}")
     
+    paper_per_keyword = 3
+    
+    # `subthemes_by_topic` is {topic: [sub1, sub2, sub3], …}
+    # `keywords_by_topic` is still {topic: [kw1, kw2, …], …}
+            
     # --- BEGIN DEBUG ---
     print("\n--- DEBUGGING: Right before calling collect_papers ---")
     # Replace 'keywords_by_subtheme_data_for_collection' with the actual variable name you use
-    actual_data_passed = keywords_by_topic # Or whatever your variable is named
+    actual_data_passed = keywords_by_topic_critiqued # Or whatever your variable is named
 
     print(f"Variable name being passed to collect_papers: keywords_by_subtheme (in run_pipeline.py)")
     print(f"Type of this variable: {type(actual_data_passed)}")
@@ -118,28 +149,18 @@ def main():
             print(f"  Type of keywords for this subtheme: {type(keywords_for_first_subtheme)}")
             print(f"  Keywords for this subtheme: {keywords_for_first_subtheme}")
     print("--- END DEBUG ---\n")
-    
-    paper_per_keyword = 3
-    
-    # `subthemes_by_topic` is {topic: [sub1, sub2, sub3], …}
-    # `keywords_by_topic` is still {topic: [kw1, kw2, …], …}
 
-    # Build a flat mapping of each *sub-theme* → its keywords:
-    keywords_by_subtheme: Dict[str,List[str]] = {}
-    for topic, subs in subthemes_by_topic.items():
-        for sub in subs:
-            # you need a small helper to invert your earlier keywords_by_topic:
-            keywords_by_subtheme[sub] = [
-                kw for kw in keywords_by_topic[topic] if sub.lower() in kw.lower()
-            ] or keywords_by_topic[topic]  # fallback if none
+    # Generate domain terms, critique them.
+    domain_terms_raw = generate_domain_terms(title, max_terms=10)
+    domain_terms, domain_suggestions = critique_list("Domain terms", domain_terms_raw)
 
     # now collect with quotas PER SUB-THEME
     papers = collect_papers(
-        keywords_by_topic,
+        keywords_by_topic_critiqued,
         cutoff_year=cutoff_year,
-        paper_per_keyword=paper_per_keyword  # your per-bucket fetch cap
+        paper_per_keyword=paper_per_keyword
     )
-
+    
     out_path = Path("raw_candidates.json")
     # Remove old file if it exists
     if out_path.exists():
@@ -168,12 +189,22 @@ def main():
     from filter_and_rank import semantic_rank_papers, filter_by_domain, filter_by_core
     from paper_collector import generate_app_terms, generate_tech_terms 
 
-    # 7a. Two-phase LLM extraction
-    app_raw  = generate_app_terms(title, max_terms=5)
-    tech_raw = generate_tech_terms(title, max_terms=5)
+   # generate the raw lists
+    app_terms_raw    = generate_app_terms(title, max_terms=5)
+    tech_terms_raw   = generate_tech_terms(title, max_terms=8)
+    
+
+    # run them through the critic
+    app_critiqued, app_suggestions       = critique_list("Application terms", app_terms_raw)
+    tech_critiqued, tech_suggestions     = critique_list("Technique terms", tech_terms_raw)
+
+    # (optional) print out what got rejected & suggested replacements
+    print(f"📝 App terms suggestions: {app_suggestions}")
+    print(f"📝 Tech terms suggestions: {tech_suggestions}")
+    print(f"📝 Domain terms suggestions: {domain_suggestions}")
 
     # 1) Cleaned APP terms: only multi-word phrases
-    app_terms = clean_terms(app_raw)
+    app_terms = clean_terms(app_critiqued)
     app_terms = [t for t in app_terms if len(t.split()) > 1]
 
     # 1b) Anchor to the exact title phrase
@@ -182,14 +213,15 @@ def main():
         app_terms.insert(0, full_phrase)
 
     # 2) Cleaned TECH terms
-    tech_terms = clean_terms(tech_raw)
+    tech_terms = clean_terms(tech_critiqued)
 
     # 2b) If all pruning removed them, fall back to LLM’s own top suggestions
     if not tech_terms:
-        tech_terms = tech_raw[:3]  # take the first 3 phrases the LLM gave us
+        tech_terms = tech_critiqued[:3]  # take the first 3 phrases the LLM gave us
 
     print(f"🔑 Final application terms: {app_terms}")
     print(f"🔑 Final technique terms:   {tech_terms}")
+    print(f"🔑 Final domain terms: {domain_terms}")
     
     # If either list is empty, fallback to original raw lists
     if not app_terms:
