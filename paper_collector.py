@@ -25,14 +25,8 @@ METHODOLOGY_STOP_TERMS = {
 }
 
 # Load API Key
-load_dotenv()
-print("CWD:", os.getcwd())
-print("ENV file:", os.path.abspath(".env"), "→ exists?", os.path.exists(".env"))
-print("GEMINI_API_KEY:", os.getenv("GEMINI_API_KEY"))
-api_key = os.getenv("GEMINI_API_KEY")
-if not api_key:
-    raise RuntimeError("GEMINI_API_KEY not set. Check your .env or environment variables.")
-client = genai.Client(api_key=api_key)
+from api_client_manager import get_next_api_client
+
 
 #Enrichment helpers
 
@@ -92,10 +86,13 @@ Avoid bullets, numbering, or extra text.
 Research Title: {title}
 """
     
-    response = client.models.generate_content(
+    active_client = get_next_api_client() # Get the next client
+    response = active_client.models.generate_content( # Use active_client
         model="gemini-2.0-flash",
         contents=prompt
-    )
+)
+    
+    # 1) Try splitting on newlines
     text = response.text.strip()
     
     # 1) Try splitting on newlines
@@ -134,7 +131,11 @@ Do not include any punctuation other than the separating commas.
 
 Return exactly 5 to 10 keywords."""
         
-        response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+        active_client = get_next_api_client() # Get the next client
+        response = active_client.models.generate_content( # Use active_client
+            model="gemini-2.0-flash",
+            contents=prompt
+    )
         keywords = response.text.strip().replace('\n', '').split(", ")
         keywords_by_topic[topic] = keywords
         
@@ -156,10 +157,13 @@ def generate_subthemes(
 Given the academic topic "{topic}", list exactly {max_subthemes} key sub-themes
 (research niches or angles) that often appear under this topic.
 Respond with a single comma-separated list, no bullets or commentary."""
-        resp = client.models.generate_content(
+
+        active_client = get_next_api_client() # Get the next client
+        resp = active_client.models.generate_content( # Use active_client
             model="gemini-2.0-flash",
             contents=prompt
-        )
+    )
+        
         text = resp.text.strip()
         # try newline → comma fallback
         lines = [l.strip() for l in text.splitlines() if l.strip()]
@@ -236,10 +240,11 @@ def generate_keywords_by_subtheme(
         # --------------------------------------------------------------
 
         try:
-            resp = client.models.generate_content(
+            active_client = get_next_api_client() # Get the next client
+            resp = active_client.models.generate_content( # Use active_client
                 model="gemini-2.0-flash",
                 contents=prompt
-            )
+        )
         except google_exceptions.GoogleAPIError as e:
             raise RuntimeError(
                 f"Gemini API error for topic “{raw_topic}”: {e}"
@@ -704,10 +709,11 @@ segmentation uncertainty, atlas-based methods, volume rendering
 Topic: {title}
 """
     # Use the same API as generate_topics / generate_keywords
-    response = client.models.generate_content(
+    active_client = get_next_api_client() # Get the next client
+    response = active_client.models.generate_content( # Use active_client
         model="gemini-2.0-flash",
         contents=prompt
-    )
+)
     text = response.text.strip()
     # Split on commas, strip whitespace, lowercase
     terms = [t.strip().lower() for t in text.split(",")]
@@ -750,7 +756,8 @@ molecular property prediction, molecular graphs, drug discovery, materials infor
 
 Research Title: {title}
 """
-     resp = client.models.generate_content(
+     active_client = get_next_api_client() # Get the next client
+     resp = active_client.models.generate_content( # Use active_client
          model="gemini-2.0-flash",
          contents=prompt
      )
@@ -783,7 +790,8 @@ saliency maps, grad-cam, shap values, surrogate models, counterfactual explanati
 
 Research Title: {title}
 """
-     resp = client.models.generate_content(
+     active_client = get_next_api_client() # Get the next client
+     resp = active_client.models.generate_content( # Use active_client
          model="gemini-2.0-flash",
          contents=prompt
      )
