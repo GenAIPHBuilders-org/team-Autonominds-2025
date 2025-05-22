@@ -1,6 +1,9 @@
 import json
+import os
 import re
+import time
 from typing import List, Dict, Tuple, Any
+from api_client_manager import get_next_api_client
 
 # Depending on your SDK version, ClientError may live here:
 try:
@@ -11,7 +14,7 @@ except ImportError:
 
 # The LLM client imported from your existing code
 from google.genai import Client
-client = Client()
+
 
 
 def _extract_json(raw: str) -> Any:
@@ -60,7 +63,9 @@ def critique_list(
         f"}}\n"
     )
     try:
-        resp = client.models.generate_content(model=model, contents=prompt)
+        active_client = get_next_api_client() # Get the next client
+        resp = active_client.models.generate_content(model=model, contents=prompt)
+        time.sleep(2)
         raw = resp.text
         data = _extract_json(raw)
     except Exception as e:
