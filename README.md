@@ -234,10 +234,10 @@ graph TD
    pip install python-dotenv google-genai requests feedparser transformers torch numpy scikit-learn joblib flask flask-socketio
    ```
 4. **Set up your Gemini API key
-Create a .env file in the project root with your Gemini API key:**
-```
-GEMINI_API_KEY=your_api_key_here
-```
+   Create a .env file in the project root with your Gemini API key:**
+   ```
+   GEMINI_API_KEY=your_api_key_here
+   ```
 
 ## 🚀 Usage
 ### Command Line Interface
@@ -272,6 +272,20 @@ Then open your browser to `http://127.0.0.1:5000/` and:
 - `Missing Directories`: The web app will automatically create required directories
 - `Model Downloads`: The first run may take longer as it downloads SciBERT
 
+## ✅ Test Case
+```
+Research Title: Self-Supervised Learning Approaches for 3D Point Cloud Understanding
+Cutoff Year: 2015
+```
+Upon running the pipeline with the above inputs, the system should:
+
+1. Generate relevant academic topics, subthemes, and refined search keywords.
+2. Fetch and filter papers from academic sources such as arXiv, PubMed, and CrossRef.
+3. Perform semantic ranking and categorize papers into Focused and Exploratory groups.
+4. Analyze all top papers to extract:
+   - AI-generated academic insights and relevance explanations.
+5. Output ranked papers and paper-level insights to the web interface and console.
+
 ## 🤝 Contributing
 
 1. Fork the repository
@@ -284,6 +298,6 @@ Then open your browser to `http://127.0.0.1:5000/` and:
 ## 🤓 Team Members
 
 - **Vhien Anuta** (Team Representative) - [Github](https://github.com/algo-boy)
-- **Raphael Gio Acupan** - [Github](https://github.com/GioAcupan)
-- **Princess Joeby Arabis** - [Github](https://github.com/PrincessA29)
-- **Yuri Alfrance Egipto** - [Github](https://github.com/yurialfrance)
+- **Raphael Gio Acupan** (AI Integration Engineer) - [Github](https://github.com/GioAcupan)
+- **Princess Joeby Arabis** (Front-end Developer) - [Github](https://github.com/PrincessA29)
+- **Yuri Alfrance Egipto** (Front-end Developer) - [Github](https://github.com/yurialfrance)
