@@ -1,4 +1,4 @@
-# Authematic: Agentic Literature Curation Pipeline
+# Authematic: (Automatic + Thematic)
 
 Authematic is a lightweight, agent-driven Python pipeline that takes a research paper title as input and produces two curated lists of the most relevant academic papers:
 
@@ -24,51 +24,76 @@ Under the hood, it uses LLM calls (Gemini), arXiv & Semantic Scholar scraping, S
 
 ---
 
-## 🚀 High-Level Pipeline
+## ⛓️ Pipeline Flow
 
-1. **User Input**  
-   - Title of your research topic  
-   - Publication year cutoff (e.g. 2018)  
-   - (Future) Citation style  
+Outlined below is the step-by-step execution flow of the AI-powered literature curation pipeline. The pipeline starts with a research title and ends with a ranked and categorized list of academic papers.
 
-2. **Topic & Keyword Generation** (`paper_collector.py`)  
-   - **4 Related-Work Topics** via Gemini: 2 Core / 1 Adjacent / 1 Emerging  
-   - **5–10 Search Phrases per Topic** via Gemini  
-   - **Domain Filter Terms** via Gemini  
+1.  **Initialization & User Input**:
+    * Environment variables (including API keys) are loaded from a `.env` file.
+    * API clients are initialized and managed via `api_client_manager.py`, setting up a round-robin system for using available Gemini API keys.
+    * The `run_pipeline.py` script starts by prompting the user for the **research title**, a **publication year cutoff**, and the desired **citation style**.
 
-3. **Paper Collection** (`paper_collector.py`)  
-   - For each search phrase:  
-     - Retrieve up to 4 papers from **arXiv**  
-     - Retrieve up to 4 papers from **Semantic Scholar**  
-     - Enforce year cutoff as you fetch  
+2.  **Topic & Subtheme Generation**:
+    * Using the input title, `paper_collector.py` calls the Gemini API (via `api_client_manager.py`) to generate **4 high-level academic topics** (Core, Adjacent, Emerging).
+    * For each of these topics, it again calls the Gemini API to generate up to **3 sub-themes** or research niches.
 
-4. **Raw Dump & Reload**  
-   - Save all raw candidates to `raw_candidates.json`  
-   - Reload for deterministic filtering & ranking  
+3.  **Initial Keyword Generation**:
+    * For each "Topic ▶ Subtheme" pair, `paper_collector.py` calls the Gemini API to generate up to **5 specific search keywords**.
+    * The results are structured as a nested dictionary and saved temporarily to `keywords_by_subtheme.json`.
 
-5. **Basic Filters** (`filter_and_rank.py`)  
-   - **DOI filter**: remove entries with missing/empty DOI  
-   - **Abstract filter**: remove entries without an abstract  
-   - **Deduplication** by DOI  
+4.  **Keyword Critique & Refinement**:
+    * The `keyword_critic.py` module is invoked for each sub-theme's keyword list.
+    * It sends the list to the Gemini API, asking it to act as a critic, **removing broad/redundant terms** and **suggesting replacements**.
+    * The refined (kept + suggested) keywords are used for the next step.
 
-6. **Term Buckets Extraction** (`run_pipeline.py`)  
-   - **App terms**: multi-word phrases + exact full-title anchor  
-   - **Tech terms**: cleaned LLM outputs, guaranteed non-empty by fallback  
+5.  **Paper Collection & Aggregation**:
+    * The `collect_papers` function in `paper_collector.py` orchestrates the fetching.
+    * It iterates through each sub-theme and its refined keywords.
+    * For each keyword, it concurrently queries multiple literature sources (**arXiv**, **PubMed**, **CrossRef**) using a `ThreadPoolExecutor`. *Semantic Scholar is noted as excluded for initial search but used later for enrichment*.
+    * Each source fetches a set number of papers per keyword per attempt/offset.
+    * As papers are fetched, they are **filtered by year** and checked for **valid DOI and abstract**. They are also **deduplicated within each source's batch**.
+    * Papers are added to their respective sub-theme "bucket" until a minimum target is reached, with global deduplication within the bucket.
 
-7. **Semantic Ranking**  
-   - Embed every paper & your title with **SciBERT** (`embeddings.py`)  
-   - Rank by cosine similarity  
+6.  **Data Enrichment**:
+    * After collection, all papers are pooled together.
+    * The `enrich_with_semantic_scholar` function is called to **fetch missing abstracts or author details** for papers using their DOIs.
 
-8. **Heuristic Boosting**  
-   - Infer which domain terms are most over-represented in the Top 20 vs rest  
-   - Boost scores on any paper containing those terms  
+7.  **Intermediate Save & Load**:
+    * `paper_collector.py` generates initial **domain terms** using the Gemini API, which are then critiqued via `keyword_critic.py`.
+    * The collected (and enriched) papers, the query title, and the critiqued domain terms are saved to `raw_candidates.json`.
+    * This JSON file is immediately reloaded using `load_candidates_from_json` in `filter_and_rank.py`.
 
-9. **Final Split**  
-   - **Focused**: papers matching **both** an app-term regex & a tech-term regex (plus strict fallback if <20)  
-   - **Exploratory**: next-best papers matching **any** domain-term regex  
+8.  **Initial Filtering**:
+    * The loaded papers undergo stricter filters using `filter_and_rank.py`:
+        * `filter_by_doi`: Ensures a valid DOI exists.
+        * `filter_by_abstract`: Ensures a valid abstract exists.
+        * `dedupe_by_doi`: Performs a final global deduplication.
 
-10. **Web Interface or Console Output**  
-    - Displays the two lists with title, authors, year, score, and DOI  
+9.  **Application & Technique Term Generation**:
+    * `paper_collector.py` calls the Gemini API to generate **application-centric terms** and **technique/methodology terms**.
+    * These lists are also critiqued using `keyword_critic.py`.
+    * The critiqued lists (along with domain terms) are further **cleaned** using internal stop-word lists.
+
+10. **Technique Term Clustering (Optional)**:
+    * If enough technique terms exist, their **SciBERT embeddings** are calculated using `embeddings.py`.
+    * **K-Means clustering** is applied to group similar techniques.
+    * A smaller, **representative set of technique terms** is selected.
+
+11. **Semantic Ranking & Boosting**:
+    * All filtered papers are ranked using `semantic_rank_papers` from `filter_and_rank.py`.
+    * This involves getting **SciBERT embeddings** for each paper (`embeddings.py`) and calculating **cosine similarity** against the query.
+    * Scores are then **boosted** if a paper matches application or technique terms.
+    * Papers are re-sorted based on boosted scores.
+
+12. **Categorization**:
+    * **Regex patterns** are created for application, technique, and domain terms.
+    * Papers are categorized into:
+        * **Focused Papers**: Matching a combination of Application, Technique, and Domain terms.
+        * **Exploratory Papers**: Matching Domain and/or Technique terms, excluding those already in 'Focused'.
+
+13. **Final Output**:
+    * The pipeline prints the top **Focused** and **Exploratory** papers (title, year, score, DOI) to the console.
+    * The total execution time is reported.
 
 ---
 
