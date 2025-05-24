@@ -95,6 +95,58 @@ Outlined below is the step-by-step execution flow of the AI-powered literature c
     * The pipeline prints the top **Focused** and **Exploratory** papers (title, year, score, DOI) to the console.
     * The total execution time is reported.
 
+```mermaid
+graph TD
+    A[Start: Input Research Title, Year, Style] --> B(Generate Topics);
+    B --> C(Generate Subthemes);
+    C --> D(Generate Keywords per Subtheme);
+    D --> E{Keyword Critique};
+    E --> F[Collect Papers];
+
+    subgraph Paper Collection
+        F --> G1(Query arXiv);
+        F --> G2(Query PubMed);
+        F --> G3(Query CrossRef);
+        G1 --> H(Aggregate & Initial Filter);
+        G2 --> H;
+        G3 --> H;
+    end
+
+    H --> I(Enrich with Semantic Scholar);
+    I --> J(Generate/Critique Domain Terms);
+    J --> K[Save to raw_candidates.json];
+    K --> L[Load from raw_candidates.json];
+    L --> M[Apply Stricter Filters: DOI, Abstract, Dedupe];
+    M --> N(Generate/Critique App & Tech Terms);
+    N --> O(Clean All Terms);
+    O --> P{Tech Term Clustering?};
+    P -- Yes --> Q(Cluster & Select Tech Terms);
+    P -- No --> R(Use Cleaned Tech Terms);
+    Q --> S[Prepare Final Term Lists & Patterns];
+    R --> S;
+    M --> T(Embed & Rank Papers - SciBERT);
+    S --> U{Boost Scores based on Terms};
+    T --> U;
+    U --> V[Re-sort Papers];
+    V --> W{Categorize Papers};
+    W -- Focused --> X(Select Focused Papers);
+    W -- Exploratory --> Y(Select Exploratory Papers);
+    X --> Z[Output: Print Focused List];
+    Y --> AA[Output: Print Exploratory List];
+    Z --> BB[End];
+    AA --> BB;
+
+    %% Styling
+    classDef io fill:#dceefb,stroke:#2a4365,stroke-width:2px,color:#1a202c;
+    classDef process fill:#bee3f8,stroke:#2a4365,stroke-width:2px,color:#1a202c;
+    classDef decision fill:#90cdf4,stroke:#2a4365,stroke-width:2px,color:#1a202c;
+    classDef storage fill:#b3cde0,stroke:#2a4365,stroke-width:2px,color:#1a202c;
+    
+    class A,K,L,Z,AA,BB io;
+    class B,C,D,F,G1,G2,G3,H,I,J,M,N,O,Q,R,S,T,V,X,Y process;
+    class E,P,W,U decision;
+```
+
 ---
 
 ## 📂 Project Structure
