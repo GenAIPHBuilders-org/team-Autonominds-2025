@@ -1,6 +1,6 @@
 # Authematic: (Automatic + Thematic)
 
-Authematic is a lightweight, agent-driven Python pipeline that takes a research paper title as input and produces two curated lists of the most relevant academic papers:
+Authematic is a lightweight, agent-driven assistant that takes a research paper title as input and produces two curated lists of the most relevant academic papers:
 
 1. **Focused Top 20**: Papers that match both your application domain and your chosen technique keywords.  
 2. **Exploratory Top 10**: Broader domain-only matches that add methodological or interdisciplinary insights.
@@ -12,13 +12,6 @@ Authematic is a lightweight, agent-driven Python pipeline that takes a research 
 3. Semantic ranking using SciBERT embeddings
 4. Intelligent filtering and categorization
 5. Customizable year cutoff for recency control
-
-**Features to be implemented:** 
-
-1. Additional API sources for papers
-2. Summary of top papers + relevance to the study
-3. Literature gap highlighting
-4. Automatic citation generation based on preferred citation style
 
 Under the hood, it uses LLM calls (Gemini), arXiv & Semantic Scholar scraping, SciBERT embeddings, and a small amount of TF-IDF + heuristic boosting to maximize both precision and coverage.
 
@@ -101,54 +94,58 @@ Outlined below is the step-by-step execution flow of the AI-powered literature c
 
 ```mermaid
 graph TD
-    A[Start: Input Research Title, Year, Style] --> B(Generate Topics);
-    B --> C(Generate Subthemes);
-    C --> D(Generate Keywords per Subtheme);
-    D --> E{Keyword Critique};
-    E --> F[Collect Papers];
+    A["Start: Input Research Title, Year, Style"] --> B["Generate Topics"]
+    B --> C["Generate Subthemes"]
+    C --> D["Generate Keywords per Subtheme"]
+    D --> E{Keyword Critique}
+    E --> F["Collect Papers"]
 
-    subgraph Paper Collection
-        F --> G1(Query arXiv);
-        F --> G2(Query PubMed);
-        F --> G3(Query CrossRef);
-        G1 --> H(Aggregate & Initial Filter);
-        G2 --> H;
-        G3 --> H;
+    subgraph "Paper Collection"
+      F --> G1["Query arXiv"]
+      F --> G2["Query PubMed"]
+      F --> G3["Query CrossRef"]
+      G1 --> H["Aggregate & Initial Filter"]
+      G2 --> H
+      G3 --> H
     end
 
-    H --> I(Enrich with Semantic Scholar);
-    I --> J(Generate/Critique Domain Terms);
-    J --> K[Save to raw_candidates.json];
-    K --> L[Load from raw_candidates.json];
-    L --> M[Apply Stricter Filters: DOI, Abstract, Dedupe];
-    M --> N(Generate/Critique App & Tech Terms);
-    N --> O(Clean All Terms);
-    O --> P{Tech Term Clustering?};
-    P -- Yes --> Q(Cluster & Select Tech Terms);
-    P -- No --> R(Use Cleaned Tech Terms);
-    Q --> S[Prepare Final Term Lists & Patterns];
-    R --> S;
-    M --> T(Embed & Rank Papers - SciBERT);
-    S --> U{Boost Scores based on Terms};
-    T --> U;
-    U --> V[Re-sort Papers];
-    V --> W{Categorize Papers};
-    W -- Focused --> X(Select Focused Papers);
-    W -- Exploratory --> Y(Select Exploratory Papers);
-    X --> Z[Output: Print Focused List];
-    Y --> AA[Output: Print Exploratory List];
-    Z --> BB[End];
-    AA --> BB;
+    H --> I["Enrich with Semantic Scholar"]
+    I --> J["Generate/Critique Domain Terms"]
+    J --> K["Save to raw_candidates.json"]
+    K --> L["Load from raw_candidates.json"]
+    L --> M["Apply Stricter Filters: DOI, Abstract, Dedupe"]
+    M --> N["Generate/Critique App & Tech Terms"]
+    N --> O["Clean All Terms"]
+    O --> P{Tech Term Clustering?}
+    P -- "Yes" --> Q["Cluster & Select Tech Terms"]
+    P -- "No" --> R["Use Cleaned Tech Terms"]
+    Q --> S["Prepare Final Term Lists & Patterns"]
+    R --> S
+    M --> T["Embed & Rank Papers – SciBERT"]
+    S --> U{Boost Scores based on Terms}
+    T --> U
+    U --> V["Re-sort Papers"]
+    V --> W{Categorize Papers}
+    W -- "Focused" --> X["Select Focused Papers"]
+    W -- "Exploratory" --> Y["Select Exploratory Papers"]
+
+    %% Insight Generation
+    X --> I1["Generate Insights\n(formal summary + relevance)"]
+    Y --> I1
+    I1 --> Z["Print Focused List\n(with insights)"]
+    I1 --> AA["Print Exploratory List\n(with insights)"]
+    Z --> BB["End"]
+    AA --> BB
 
     %% Styling
-    classDef io fill:#dceefb,stroke:#2a4365,stroke-width:2px,color:#1a202c;
-    classDef process fill:#bee3f8,stroke:#2a4365,stroke-width:2px,color:#1a202c;
-    classDef decision fill:#90cdf4,stroke:#2a4365,stroke-width:2px,color:#1a202c;
-    classDef storage fill:#b3cde0,stroke:#2a4365,stroke-width:2px,color:#1a202c;
-    
-    class A,K,L,Z,AA,BB io;
-    class B,C,D,F,G1,G2,G3,H,I,J,M,N,O,Q,R,S,T,V,X,Y process;
-    class E,P,W,U decision;
+    classDef io       fill:#dceefb,stroke:#2a4365,stroke-width:2px,color:#1a202c
+    classDef process  fill:#bee3f8,stroke:#2a4365,stroke-width:2px,color:#1a202c
+    classDef decision fill:#90cdf4,stroke:#2a4365,stroke-width:2px,color:#1a202c
+    classDef storage  fill:#b3cde0,stroke:#2a4365,stroke-width:2px,color:#1a202c
+
+    class A,K,L,Z,AA,BB io
+    class B,C,D,F,G1,G2,G3,H,I,J,M,N,O,Q,R,S,T,V,X,Y,I1 process
+    class E,P,W,U decision
 ```
 
 ---
