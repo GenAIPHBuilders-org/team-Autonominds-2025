@@ -279,3 +279,11 @@ Then open your browser to `http://127.0.0.1:5000/` and:
 3. Commit your changes: `git commit -m 'Add some feature'`
 4. Push to the branch: `git push origin feature-name`
 5. Open a pull request
+
+
+## 🤓 Team Members
+
+- **Vhien Anuta** (Team Representative) - [Github](https://github.com/algo-boy)
+- **Raphael Gio Acupan** - [Github](https://github.com/GioAcupan)
+- **Princess Joeby Arabis** - [Github](https://github.com/PrincessA29)
+- **Yuri Alfrance Egipto** - [Github](https://github.com/yurialfrance)
