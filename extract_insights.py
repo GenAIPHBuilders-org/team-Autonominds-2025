@@ -1,9 +1,7 @@
-from google import genai
-import os
 from dotenv import load_dotenv
+from api_client_manager import get_next_api_client
 
 load_dotenv()
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 def generate_insights(title, abstract):
     prompt = f"""
@@ -21,7 +19,7 @@ You must perform two analytical steps:
 
 Important style rules:
     - Your output must be written entirely in formal academic tone.
-    - Use second-person perspective throughout. Refer to the user directly as “you” or “your” (e.g., “This paper may support your research…” or “You may find this study useful…”).
+    - Use second-person perspective throughout. Refer to the user directly as “you” or “your”.
     - Do not use first-person voice (I, we), third-person references (the researcher, their work), bullet points, lists, or headings.
     - The response must flow as natural academic prose, formatted as two clear, labeled sections.
 
@@ -33,15 +31,15 @@ Your Output:
     Summary: [Write the one-paragraph abstract synthesis here]
     Relevance: [Write the relevance explanation in second-person here]
     """
-    
+
     try:
+        client = get_next_api_client()
         response = client.models.generate_content(
             model="gemini-2.0-flash",
             contents=prompt
         )
         output = response.text.strip()
-        
-        # Attempt to split the response cleanly
+
         summary, relevance = "", ""
         if "Summary:" in output and "Relevance:" in output:
             parts = output.split("Relevance:")
@@ -49,12 +47,12 @@ Your Output:
             relevance = parts[1].strip()
         else:
             summary = output.strip()
-            
+
         return {
             "summary": summary,
             "relevance": relevance
         }
-    
+
     except Exception as e:
         print(f"Gemini insight generation error: {e}")
         return {
