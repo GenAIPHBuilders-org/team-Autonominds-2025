@@ -1,35 +1,101 @@
+import math
 import os
+import re
 import sys
 import json
 import traceback
 import time
 from pathlib import Path
-from flask import Flask, render_template, request, jsonify
+from typing import Any, List, Dict, Tuple
+
+# Third-party imports
+import numpy as np
+from sklearn.cluster import KMeans
+
+
+# --- 1. Load .env file from project root ---
+# This MUST be done BEFORE importing any project modules that might need these env vars
+# (like api_client_manager via paper_collector, keyword_critic, etc.)
+from dotenv import load_dotenv # Import load_dotenv here
+project_root = Path(__file__).resolve().parent.parent # Get project root directory
+dotenv_path = project_root / '.env'
+if dotenv_path.exists():
+    load_dotenv(dotenv_path=dotenv_path)
+    print(f"INFO: app.py loaded .env file from: {dotenv_path}")
+else:
+    print(f"WARNING: app.py did not find .env file at: {dotenv_path}")
+
+# For debugging during merge - check if keys are loaded as expected by api_client_manager
+# These are the keys your api_client_manager.py expects.
+# print(f"INFO: GEMINI_API_KEY_1 after load_dotenv in app.py: {'SET' if os.getenv('GEMINI_API_KEY_1') else 'NOT SET'}")
+# print(f"INFO: GEMINI_API_KEY_2 after load_dotenv in app.py: {'SET' if os.getenv('GEMINI_API_KEY_2') else 'NOT SET'}")
+# --- End .env loading ---
+
+
+
+# --- 3. Add Project Root to sys.path for imports ---
+# This allows importing your backend modules from the parent directory (project root)
+sys.path.append(str(project_root))
+print(f"INFO: Project root '{str(project_root)}' added to sys.path.")
+
+# --- 4. Import Flask, SocketIO, and YOUR Up-to-Date Backend Modules ---
+from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO
 
-# Print debug info
-print("Starting app.py")
-print(f"Current directory: {os.getcwd()}")
-
-# Set API key directly before any imports that need it
-os.environ["GEMINI_API_KEY"] = "AIzaSyCN6hmeeB5sxliWoYL7OVxHxTSvgbnGCko"
-print(f"GEMINI_API_KEY after setting: {os.environ.get('GEMINI_API_KEY')}")
-
-# Add parent directory to path to import from parent modules
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-# Import your existing modules
-from paper_collector import generate_topics, generate_keywords, collect_papers, generate_domain_terms
-from filter_and_rank import filter_by_doi, filter_by_abstract, dedupe_by_doi, semantic_rank_papers
+# Import your project's modules (ensure these are the cleaned versions)
+# Note: api_client_manager.py will be used internally by these modules.
+from paper_collector import (
+    generate_topics,
+    generate_subthemes,             # New function to import
+    generate_keywords_by_subtheme,  # New function to import
+    collect_papers,
+    generate_domain_terms,
+    generate_app_terms,             # Ensure this is imported if used by app.py's run_pipeline
+    generate_tech_terms             # Ensure this is imported if used by app.py's run_pipeline
+)
+from filter_and_rank import (
+    filter_by_doi, 
+    filter_by_abstract, 
+    dedupe_by_doi, 
+    semantic_rank_papers
+    # Add other functions from filter_and_rank if your app.py's run_pipeline will use them e.g. load_candidates_from_json
+)
+from keyword_critic import critique_list # For critiquing terms
+# from embeddings import embed_text 
+from embeddings import embed_text
+from extract_insights import generate_insights
 
 # Initialize Flask app
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'authematic-secret-key'
+app.config['SECRET_KEY'] = 'authematic-secret-key' # Good to keep this configurable or more random for production
 socketio = SocketIO(app)
 
-# Load environment variables
-from dotenv import load_dotenv
-load_dotenv()
+# --- Constants for Term Cleaning (from run_pipeline.py) ---
+STOP_TIER1 = {
+    "survey", "review", "framework", "architecture", "architectures",
+    "analysis", "analyses", "system", "systems",
+}
+STOP_TIER2 = {
+    "method", "methods", "approach", "approaches",
+    "algorithm", "algorithms", "technique", "techniques",
+}
+
+# --- Helper Function for Term Cleaning (from run_pipeline.py) ---
+def clean_terms(terms: List[str]) -> List[str]:
+    """
+    Cleans a list of terms by removing items containing predefined stop words.
+    (Same implementation as in your cleaned run_pipeline.py)
+    """
+    # First pass: remove terms containing any Tier-1 stop word
+    tier1_clean = [t for t in terms if set(t.split()).isdisjoint(STOP_TIER1)]
+    if tier1_clean:
+        return tier1_clean
+
+    tier2_clean = [t for t in terms if set(t.split()).isdisjoint(STOP_TIER2)]
+    if tier2_clean:
+        return tier2_clean
+
+    return terms
 
 # ==================== CITATION FUNCTIONS ====================
 
@@ -92,6 +158,35 @@ def format_apa_citation(paper):
     except Exception as e:
         print(f"Error formatting citation: {e}")
         return f"Error formatting citation for: {paper.get('title', 'Unknown title')}"
+
+def format_paper_with_citation_and_insights(paper: Dict[str, Any], index: int) -> str:
+    """
+    Format a single paper result with its APA citation and AI-generated insights.
+    """
+    # Basic paper info
+    result_msg = f"**{index}. {paper.get('title', 'Untitled')}** ({paper.get('year', 'N/A')})\n"
+    
+    authors = paper.get('authors', [])
+    if authors:
+        author_text = ', '.join(authors[:3]) # Show first 3 authors
+        if len(authors) > 3:
+            author_text += f", et al." # Indicate more authors
+        result_msg += f"   👥 **Authors:** {author_text}\n"
+    
+    result_msg += f"   🔗 **DOI:** {paper.get('doi', 'N/A')}\n"
+    result_msg += f"   📊 **Relevance Score:** {paper.get('score', 0.0):.4f}\n"
+    
+    # APA Citation
+    apa_citation = format_apa_citation(paper) # Assumes format_apa_citation is defined
+    result_msg += f"   📚 **APA Citation:** {apa_citation}\n"
+
+    # Add AI Insights
+    if paper.get('insights_summary') and paper.get('insights_summary') not in ["Summary not available.", "Insight generation skipped: Abstract was missing or empty."]:
+        result_msg += f"   💡 **AI Summary:** {paper['insights_summary']}\n"
+    if paper.get('insights_relevance') and paper.get('insights_relevance') not in ["Relevance assessment not available.", "Relevance assessment skipped: Abstract was missing or empty."]:
+        result_msg += f"   🎯 **AI Relevance to '{paper.get('query_title', 'your research')}':** {paper['insights_relevance']}\n" # Assuming query_title is available or use generic
+
+    return result_msg
 
 def format_author_apa(author_name):
     """
@@ -214,15 +309,29 @@ def handle_disconnect():
     print('Client disconnected')
 
 @socketio.on('send_message')
+
 def handle_message(data):
+    user_socket_id = request.sid
     user_message = data.get('message', '')
     context = data.get('context', {})
     print(f"Received message: '{user_message}' with context: {context}")
     
+    def emit_to_requesting_user(event_name, data_payload):
+        socketio.emit(event_name, data_payload, room=user_socket_id)
+
     # Clear context on reset
     if user_message.lower() == 'reset' or user_message.lower() == 'restart':
-        socketio.emit('set_context', {'title': None, 'processing': False, 'search_complete': False})
-        socketio.emit('receive_message', {
+        emit_to_requesting_user('set_context', {'title': None, 'processing': False, 'search_complete': False})
+        emit_to_requesting_user('receive_message', {
+            'sender': 'bot',
+            'message': "Conversation has been reset. You can start a new search by providing a research title."
+        })
+        return
+    
+    # Clear context on reset
+    if user_message.lower() == 'reset' or user_message.lower() == 'restart':
+        emit_to_requesting_user('set_context', {'title': None, 'processing': False, 'search_complete': False})
+        emit_to_requesting_user('receive_message', {
             'sender': 'bot',
             'message': "Conversation has been reset. You can start a new search by providing a research title."
         })
@@ -243,84 +352,85 @@ def handle_message(data):
             title = user_message.strip()
             
         print(f"Extracted title: '{title}'")
-        socketio.emit('receive_message', {
+        emit_to_requesting_user('receive_message', {
             'sender': 'bot', 
             'message': f"I'll help you find relevant papers for: '{title}'. What year would you like to use as a cutoff?"
         })
-        socketio.emit('set_context', {'title': title, 'processing': False, 'search_complete': False})
+        emit_to_requesting_user('set_context', {'title': title, 'processing': False, 'search_complete': False})
         return
     
-    # If we have a title and this looks like a year input
     if context.get('title') and (user_message.isdigit() or 
                              "to" in user_message or 
                              "year:" in user_message.lower()):
         # Extract year or year range
         year_text = user_message.lower().replace("year:", "").strip()
         
-        # Handle year range (e.g., "2020 to 2025")
+        year_to_use_str = "2020"  # Default year
         if "to" in year_text:
             parts = year_text.split("to")
-            if len(parts) == 2 and parts[0].strip().isdigit():
-                year = parts[0].strip()  # Use the start year
-            else:
-                year = "2020"  # Default
-        elif year_text.isdigit():
-            year = year_text
-        else:
-            year = "2020"  # Default
+            if len(parts) == 2 and parts[0].strip().isdigit() and len(parts[0].strip()) == 4 :
+                year_to_use_str = parts[0].strip()
+        elif year_text.isdigit() and len(year_text) == 4: # Ensure it's a 4-digit year
+            year_to_use_str = year_text
+        else: # If not a clear 4-digit year, prompt again or clarify
+            emit_to_requesting_user('receive_message', {
+                'sender': 'bot',
+                'message': "Please provide a valid 4-digit year for the cutoff (e.g., 2015)."
+            })
+            return # Don't start pipeline if year is not clear
             
-        title = context.get('title')
+        title_to_process = context.get('title') # Use a different variable name than the outer 'title' if it exists
         
-        # Generate progress message
-        socketio.emit('receive_message', {
+        # Generate progress message (Corrected: separate calls)
+        emit_to_requesting_user('receive_message', {
             'sender': 'bot',
-            'message': f"🚀 Starting paper search for '{title}' (≥{year}). This will take 2-3 minutes. I'll keep you updated on my progress!"
+            'message': f"🚀 Starting paper search for '{title_to_process}' (≥{year_to_use_str}). This will take several minutes. I'll keep you updated on my progress!"
         })
         
-        # Set processing flag to prevent duplicate requests
-        socketio.emit('set_context', {'processing': True, 'search_complete': False})
+        # Set processing flag (Corrected: separate call, and ensure context uses title_to_process)
+        emit_to_requesting_user('set_context', {'title': title_to_process, 'processing': True, 'search_complete': False})
         
-        # Run the pipeline in the background
-        socketio.start_background_task(run_pipeline, title, int(year))
+        # Run the pipeline in the background - this part is correct
+        socketio.start_background_task(run_pipeline, title_to_process, int(year_to_use_str), user_socket_id)
         return
     
     # Handle general questions after search is complete
     if context.get('search_complete'):
         # Handle citation-related questions
         if 'citation' in user_message.lower() or 'cite' in user_message.lower():
-            socketio.emit('receive_message', {
+            emit_to_requesting_user('receive_message', {
                 'sender': 'bot',
                 'message': "📚 **Citation Help:**\n\nI've already provided APA citations for all the papers I found. Here are some tips:\n\n• **APA Format**: Author, A. A. (Year). Title of paper. DOI or URL\n• **Copy Citations**: You can copy the APA citations I provided directly into your reference list\n• **Bibliography**: I've also generated a complete bibliography at the end of your results\n\n**Need other formats?** I can help explain MLA, Chicago, or IEEE citation styles if needed!"
             })
         elif 'mla' in user_message.lower():
-            socketio.emit('receive_message', {
+            emit_to_requesting_user('receive_message', {
                 'sender': 'bot',
                 'message': "📖 **MLA Citation Format:**\n\nMLA format looks like this:\n**Author Last, First. \"Title of Paper.\" *Journal Name*, vol. #, no. #, Year, pp. ##-##. DOI or URL.**\n\nExample:\n*Smith, John. \"Machine Learning Applications.\" AI Research Journal, vol. 15, no. 3, 2023, pp. 45-62. https://doi.org/10.1000/example.*\n\nWould you like me to help you convert any specific citations to MLA format?"
             })
         elif 'chicago' in user_message.lower():
-            socketio.emit('receive_message', {
+            emit_to_requesting_user('receive_message', {
                 'sender': 'bot',
                 'message': "📑 **Chicago Citation Format:**\n\n**Notes-Bibliography Style:**\nAuthor Last, First. \"Title of Paper.\" Journal Name vol. #, no. # (Year): ##-##. DOI or URL.\n\n**Author-Date Style:**\nAuthor Last, First. Year. \"Title of Paper.\" Journal Name vol. # (no. #): ##-##. DOI or URL.\n\nExample (Author-Date):\n*Smith, John. 2023. \"Machine Learning Applications.\" AI Research Journal 15 (3): 45-62. https://doi.org/10.1000/example.*"
             })
         # Handle general chat questions
         elif user_message.lower() in ['hi', 'hello', 'hey']:
-            socketio.emit('receive_message', {
+            emit_to_requesting_user('receive_message', {
                 'sender': 'bot',
                 'message': "Hello! I'm Authematic, your literature curation assistant. I can help you find relevant academic papers for your research. How can I help you today?"
             })
         elif 'who are you' in user_message.lower():
-            socketio.emit('receive_message', {
+            emit_to_requesting_user('receive_message', {
                 'sender': 'bot',
                 'message': "I'm Authematic, an AI-powered literature curation assistant designed to help researchers find relevant academic papers. I use natural language processing and semantic ranking to identify the most relevant papers for your research topics, and I provide properly formatted APA citations for all results!"
             })
         elif 'how do you work' in user_message.lower() or 'what can you do' in user_message.lower():
-            socketio.emit('receive_message', {
+            emit_to_requesting_user('receive_message', {
                 'sender': 'bot',
                 'message': "I help you find academic papers by:\n\n1. Analyzing your research title\n2. Generating relevant academic topics and keywords\n3. Searching multiple sources (arXiv, Semantic Scholar, etc.)\n4. Filtering and ranking papers using SciBERT embeddings\n5. Presenting you with focused and exploratory results\n6. **Providing APA citations** for all papers found\n7. **Generating a complete bibliography** ready for your references\n\nTo start, just type 'Research title: [your research topic]'"
             })
         else:
             # For any other message, prompt for a research title
-            socketio.emit('receive_message', {
+            emit_to_requesting_user('receive_message', {
                 'sender': 'bot',
                 'message': "I'm designed to help with academic literature curation and citations. If you'd like to search for papers, please provide a research title by saying 'Research title: [your title]'"
             })
@@ -329,7 +439,7 @@ def handle_message(data):
     # Handle other queries when we don't have a complete context
     # If we're processing, just acknowledge
     if context.get('processing'):
-        socketio.emit('receive_message', {
+        emit_to_requesting_user('receive_message', {
             'sender': 'bot',
             'message': "I'm still working on your search! Please be patient as I scan through thousands of academic papers. This usually takes 2-3 minutes."
         })
@@ -341,162 +451,415 @@ def handle_message(data):
             year = user_message
             
         title = context.get('title')
-        socketio.emit('receive_message', {
+        emit_to_requesting_user('receive_message', {
             'sender': 'bot',
             'message': f"🚀 Starting paper search for '{title}' (≥{year}). This will take 2-3 minutes. I'll keep you updated!"
         })
-        socketio.emit('set_context', {'processing': True, 'search_complete': False})
-        socketio.start_background_task(run_pipeline, title, int(year))
+        emit_to_requesting_user('set_context', {'processing': True, 'search_complete': False})
+        socketio.start_background_task(run_pipeline, title, int(year), user_socket_id)
     # Otherwise prompt for research title
     else:
-        socketio.emit('receive_message', {
+        emit_to_requesting_user('receive_message', {
             'sender': 'bot',
             'message': "I can help you find relevant academic papers with properly formatted citations. Please provide a research title by saying 'Research title: [your title]'"
         })
 
-def run_pipeline(title, cutoff_year):
+
+def run_pipeline(title: str, cutoff_year: int, user_socket_id: str):
+    """
+    Complete pipeline logic, adapted for the web app with SocketIO progress updates
+    to a specific user.
+    """
+    # Helper to emit messages specifically to the user who made the request
+    def emit_to_user(event_name: str, data_payload: Dict[str, Any]):
+        socketio.emit(event_name, data_payload, room=user_socket_id)
+
     try:
-        start_time = time.time()
+        pipeline_start_time = time.time()
+        emit_to_user('receive_message', {'sender': 'bot', 'message': f"🚀 Starting full literature search for: '{title}' (papers ≥ {cutoff_year}). This may take several minutes..."})
+
+        # === Phase 1: Topic, Subtheme, and Keyword Generation & Critique ===
+        emit_to_user('receive_message', {'sender': 'bot', 'message': "📊 **Phase 1/7: Generating Topics, Subthemes & Keywords...**"})
         
-        # Step 1: Topic and Keyword Generation
-        socketio.emit('receive_message', {'sender': 'bot', 'message': "📊 **Step 1/5:** Analyzing your research title and generating relevant topics..."})
+        related_topics: List[str] = generate_topics(title)
+        emit_to_user('receive_message', {'sender': 'bot', 'message': f"✅ Generated {len(related_topics)} research topics."})
+
+        subthemes_by_topic: Dict[str, List[str]] = generate_subthemes(related_topics, max_subthemes=3)
+        emit_to_user('receive_message', {'sender': 'bot', 'message': f"✅ Generated subthemes for topics."})
+
+        raw_keywords_nested: Dict[str, Dict[str, List[str]]] = generate_keywords_by_subtheme(subthemes_by_topic, max_terms=5)
+        emit_to_user('receive_message', {'sender': 'bot', 'message': f"✅ Generated raw keywords for subthemes."})
         
-        # Generate topics
-        related_topics = generate_topics(title)
-        socketio.emit('receive_message', {'sender': 'bot', 'message': f"✅ Generated **{len(related_topics)} research topics:**\n• {chr(10).join(['• ' + topic for topic in related_topics])}"})
+        emit_to_user('receive_message', {'sender': 'bot', 'message': "🤖 Refining keywords with Critic AI..."})
+        critiqued_keywords_nested: Dict[str, Dict[str, List[str]]] = {}
+        for topic_key, subthemes_map in raw_keywords_nested.items():
+            refined_subthemes_for_topic: Dict[str, List[str]] = {}
+            for subtheme_key, original_keywords in subthemes_map.items():
+                critic_label = f"Keywords for topic '{topic_key}' / subtheme '{subtheme_key}'"
+                refined_list, _ = critique_list(critic_label, original_keywords) # Assuming suggestions_map is not used here
+                refined_subthemes_for_topic[subtheme_key] = refined_list
+            critiqued_keywords_nested[topic_key] = refined_subthemes_for_topic
+        emit_to_user('receive_message', {'sender': 'bot', 'message': "✅ Keywords refined."})
+
+        # === Phase 2: Paper Collection ===
+        emit_to_user('receive_message', {'sender': 'bot', 'message': "📚 **Phase 2/7: Collecting Academic Papers...** (This is the longest step)"})
+        papers_to_fetch_per_keyword_source: int = 3
+        collected_papers: List[Dict] = collect_papers(
+            keywords_by_topic=critiqued_keywords_nested,
+            cutoff_year=cutoff_year,
+            paper_per_keyword=papers_to_fetch_per_keyword_source
+            # min_papers_per_bucket and max_fetch_attempts will use defaults from collect_papers definition
+        )
+        emit_to_user('receive_message', {'sender': 'bot', 'message': f"✅ Initial collection found {len(collected_papers)} paper candidates."})
+
+        # === Phase 3: Initial Filtering & Domain Term Generation ===
+        emit_to_user('receive_message', {'sender': 'bot', 'message': "🧹 **Phase 3/7: Initial Filtering & Domain Term Generation...**"})
         
-        # Generate keywords
-        socketio.emit('receive_message', {'sender': 'bot', 'message': "🔍 Creating search keywords for each topic..."})
-        keywords_by_topic = generate_keywords(related_topics)
+        # Instead of saving to/loading from JSON, process in memory for the web app
+        papers_after_doi_filter = filter_by_doi(collected_papers)
+        papers_after_abstract_filter = filter_by_abstract(papers_after_doi_filter)
+        papers_after_initial_filters = dedupe_by_doi(papers_after_abstract_filter)
+        emit_to_user('receive_message', {'sender': 'bot', 'message': f"✅ Initial filtering complete. {len(papers_after_initial_filters)} papers remain."})
+
+        raw_domain_terms: List[str] = generate_domain_terms(title, max_terms=15)
+        critiqued_domain_terms, domain_term_suggestions = critique_list(f"Domain terms for {title}", raw_domain_terms)
+        emit_to_user('receive_message', {'sender': 'bot', 'message': f"✅ Domain terms generated and refined."})
+        # Optional: emit domain_term_suggestions if useful for UI
+        # emit_to_user('receive_message', {'sender': 'bot', 'message': f"ℹ️ Domain term suggestions: {domain_term_suggestions}"})
+
+        # === Phase 4: Application/Technique Terms, Cleaning & Clustering ===
+        emit_to_user('receive_message', {'sender': 'bot', 'message': "🛠️ **Phase 4/7: App/Tech Terms, Cleaning & Clustering...**"})
+        raw_app_terms: List[str] = generate_app_terms(title, max_terms=7)
+        raw_tech_terms: List[str] = generate_tech_terms(title, max_terms=10)
         
-        total_keywords = sum(len(keywords) for keywords in keywords_by_topic.values())
-        socketio.emit('receive_message', {'sender': 'bot', 'message': f"✅ Generated **{total_keywords} search keywords** across all topics"})
+        critiqued_app_terms, app_term_suggestions = critique_list(f"Application terms for {title}", raw_app_terms)
+        critiqued_tech_terms, tech_term_suggestions = critique_list(f"Technique terms for {title}", raw_tech_terms)
+
+        # Finalize terms using the clean_terms helper function (ensure it's defined in app.py or imported)
+        final_app_terms: List[str] = clean_terms(critiqued_app_terms)
+        final_app_terms = [t for t in final_app_terms if len(t.split()) > 1]
+        title_lower_stripped = title.lower().strip()
+        if title_lower_stripped not in final_app_terms:
+            final_app_terms.insert(0, title_lower_stripped)
+        if not final_app_terms:
+            emit_to_user('receive_message', {'sender': 'bot', 'message': "⚠️ App terms empty after cleaning; using raw as fallback."})
+            final_app_terms = raw_app_terms[:5]
+
+        final_tech_terms: List[str] = clean_terms(critiqued_tech_terms)
+        if not final_tech_terms and critiqued_tech_terms:
+            emit_to_user('receive_message', {'sender': 'bot', 'message': "⚠️ Tech terms empty after cleaning; using critiqued as fallback."})
+            final_tech_terms = critiqued_tech_terms[:3]
+        elif not final_tech_terms:
+            emit_to_user('receive_message', {'sender': 'bot', 'message': "⚠️ Tech terms empty; using raw as fallback."})
+            final_tech_terms = raw_tech_terms[:5]
         
-        # Generate domain terms
-        domain_terms = generate_domain_terms(title, max_terms=10)
-        socketio.emit('receive_message', {'sender': 'bot', 'message': f"✅ Identified **{len(domain_terms)} domain-specific terms** for filtering"})
+        final_domain_terms: List[str] = clean_terms(critiqued_domain_terms) # Use the critiqued_domain_terms from Phase 3
+        if not final_domain_terms and critiqued_domain_terms:
+            emit_to_user('receive_message', {'sender': 'bot', 'message': "⚠️ Domain terms empty after cleaning; using critiqued as fallback."})
+            final_domain_terms = critiqued_domain_terms[:10]
+        elif not final_domain_terms:
+            emit_to_user('receive_message', {'sender': 'bot', 'message': "⚠️ Domain terms empty; using raw as fallback."})
+            final_domain_terms = raw_domain_terms[:10] # Fallback to Phase 3 raw if needed
+
+        # Prepare term lists for pattern matching
+        app_terms_for_patterns: List[str] = final_app_terms + list(app_term_suggestions.values())
+        tech_terms_for_patterns: List[str] = final_tech_terms + list(tech_term_suggestions.values()) # Base for patterns
+        domain_terms_for_patterns: List[str] = final_domain_terms + list(domain_term_suggestions.values())
         
-        # Step 2: Paper Collection
-        socketio.emit('receive_message', {'sender': 'bot', 'message': "📚 **Step 2/5:** Searching academic databases..."})
-        socketio.emit('receive_message', {'sender': 'bot', 'message': "🔍 **Searching arXiv** (preprint server)..."})
+        emit_to_user('receive_message', {'sender': 'bot', 'message': f"🔑 Final Core Application Terms: {final_app_terms}"})
+        emit_to_user('receive_message', {'sender': 'bot', 'message': f"🔑 Final Core Technique Terms: {final_tech_terms}"})
+        emit_to_user('receive_message', {'sender': 'bot', 'message': f"🔑 Final Core Domain Terms: {final_domain_terms}"})
+
+        # --- Technique Term Clustering ---
+        emit_to_user('receive_message', {'sender': 'bot', 'message': "🧬 Processing technique terms for potential clustering..."})
+        representative_tech_terms: List[str] = final_tech_terms # Default
         
-        # Show keyword search progress
-        total_searches = len(related_topics)
-        for i, (topic, keywords) in enumerate(keywords_by_topic.items(), 1):
-            socketio.emit('receive_message', {
-                'sender': 'bot', 
-                'message': f"🔍 **Searching topic {i}/{total_searches}:** {topic[:50]}{'...' if len(topic) > 50 else ''}"
-            })
-            socketio.emit('receive_message', {
-                'sender': 'bot', 
-                'message': f"   → Using keywords: {', '.join(keywords[:3])}{'...' if len(keywords) > 3 else ''}"
-            })
-            time.sleep(0.5)  # Small delay to show progress
+        if final_tech_terms and len(final_tech_terms) > 4:
+            # Filter out empty strings from final_tech_terms before embedding
+            valid_final_tech_terms = [term for term in final_tech_terms if term.strip()]
+            if len(valid_final_tech_terms) > 4 : # Check again after filtering empty strings
+                tech_term_vectors: List[np.ndarray] = [embed_text(term, use_cache=True) for term in valid_final_tech_terms]
+                # Filter out None vectors in case embed_text can return None or fails for some terms
+                valid_tech_term_vectors = [vec for vec in tech_term_vectors if vec is not None]
+                # Align valid_final_tech_terms with valid_tech_term_vectors
+                terms_actually_embedded = [term for term, vec in zip(valid_final_tech_terms, tech_term_vectors) if vec is not None]
+
+                if valid_tech_term_vectors and len(valid_tech_term_vectors) > 1: # Need at least 2 vectors for clustering
+                    emit_to_user('receive_message', {'sender': 'bot', 'message': "🔬 Clustering technique terms to find representative set..."})
+                    try:
+                        tech_vectors_stacked: np.ndarray = np.vstack(valid_tech_term_vectors)
+                        max_clusters: int = 5
+                        num_clusters: int = min(max_clusters, max(2, len(terms_actually_embedded) // 2))
+                        if num_clusters < 2 and len(terms_actually_embedded) >=2 : # Ensure num_clusters is at least 2 if possible
+                            num_clusters = 2 
+                        elif len(terms_actually_embedded) < 2: # Cannot cluster less than 2 samples
+                             raise ValueError("Not enough samples to form clusters after embedding.")
+
+
+                        kmeans = KMeans(n_clusters=num_clusters, random_state=0, n_init='auto')
+                        cluster_labels: np.ndarray = kmeans.fit_predict(tech_vectors_stacked)
+
+                        clustered_tech_terms_map: Dict[int, List[str]] = {}
+                        for term, label in zip(terms_actually_embedded, cluster_labels):
+                            clustered_tech_terms_map.setdefault(int(label), []).append(term)
+
+                        cluster_messages = ["🔑 **Technique Clusters Formed:**"]
+                        for label_id, terms_in_cluster in clustered_tech_terms_map.items():
+                            cluster_messages.append(f"    Cluster {label_id}: {', '.join(terms_in_cluster)}")
+                        emit_to_user('receive_message', {'sender': 'bot', 'message': "\n".join(cluster_messages)})
+
+                        selected_representative_terms_list: List[str] = []
+                        for label_id, terms_in_cluster in clustered_tech_terms_map.items():
+                            num_to_keep_from_cluster: int = max(1, math.ceil(math.sqrt(len(terms_in_cluster))))
+                            if len(terms_in_cluster) <= num_to_keep_from_cluster:
+                                selected_representative_terms_list.extend(terms_in_cluster)
+                            else:
+                                term_indices_in_cluster: List[int] = []
+                                for t_cluster in terms_in_cluster:
+                                    try:
+                                        term_indices_in_cluster.append(terms_actually_embedded.index(t_cluster))
+                                    except ValueError:
+                                        # This term was in terms_in_cluster but somehow not in terms_actually_embedded
+                                        print(f"Warning: Term '{t_cluster}' from cluster not found in 'terms_actually_embedded' during distance calculation.")
+                                        continue
+                                
+                                centroid_for_cluster: np.ndarray = kmeans.cluster_centers_[label_id]
+                                distances_to_centroid: List[Tuple[str, float]] = []
+                                for term, original_idx in zip(terms_in_cluster, term_indices_in_cluster):
+                                    if original_idx < len(valid_tech_term_vectors):
+                                        distances_to_centroid.append(
+                                            (term, float(np.linalg.norm(valid_tech_term_vectors[original_idx] - centroid_for_cluster)))
+                                        )
+                                distances_to_centroid.sort(key=lambda x: x[1])
+                                selected_representative_terms_list.extend([t_dist[0] for t_dist in distances_to_centroid[:num_to_keep_from_cluster]])
+                        
+                        if selected_representative_terms_list:
+                            representative_tech_terms = sorted(list(set(selected_representative_terms_list)))
+                        
+                        emit_to_user('receive_message', {'sender': 'bot', 'message': f"🔑 Representative Technique Terms after clustering: {representative_tech_terms}"})
+                    
+                    except Exception as e_cluster:
+                        emit_to_user('receive_message', {'sender': 'bot', 'message': f"⚠️ Error during technique term clustering: {e_cluster}. Using unclustered terms."})
+                        representative_tech_terms = final_tech_terms # Fallback
+                else:
+                    emit_to_user('receive_message', {'sender': 'bot', 'message': "ℹ️ Technique clustering skipped (not enough valid vectors generated)."})
+            else: # Not enough terms after filtering empty strings
+                 emit_to_user('receive_message', {'sender': 'bot', 'message': "ℹ️ Technique clustering skipped (not enough non-empty terms)."})
+        else:
+            emit_to_user('receive_message', {'sender': 'bot', 'message': "ℹ️ Technique clustering skipped (reason: ≤ 4 terms initially)."})
         
-        # Collect papers
-        papers = collect_papers(keywords_by_topic, cutoff_year)
-        socketio.emit('receive_message', {'sender': 'bot', 'message': f"✅ **Found {len(papers)} papers** from all sources!"})
+        final_tech_terms_for_patterns = representative_tech_terms if representative_tech_terms else tech_terms_for_patterns
+
+        # === Phase 5: Semantic Ranking & Boosting ===
+        emit_to_user('receive_message', {'sender': 'bot', 'message': "⚖️ **Phase 5/7: Semantic Ranking & Score Boosting...**"})
+        if not papers_after_initial_filters:
+            emit_to_user('receive_message', {'sender': 'bot', 'message': "⚠️ No papers available for semantic ranking."})
+            semantically_ranked_papers = []
+        else:
+            semantically_ranked_papers: List[Dict] = semantic_rank_papers(
+                query=title, 
+                papers=papers_after_initial_filters, 
+                top_n=None # Rank all papers initially
+            )
+            emit_to_user('receive_message', {'sender': 'bot', 'message': f"✅ Semantic ranking complete for {len(semantically_ranked_papers)} papers."})
+
+            app_regex_patterns = [re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE) for term in app_terms_for_patterns if term]
+            tech_regex_patterns = [re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE) for term in final_tech_terms_for_patterns if term]
+            
+            for paper in semantically_ranked_papers:
+                text_to_search = f"{paper.get('title','')} {paper.get('abstract','')}".lower()
+                matches_an_app_term = any(pattern.search(text_to_search) for pattern in app_regex_patterns)
+                matches_a_tech_term = any(pattern.search(text_to_search) for pattern in tech_regex_patterns)
+                current_score = paper.get("score", 0.0)
+                if matches_an_app_term and matches_a_tech_term:
+                    paper["score"] = current_score * 1.25
+                elif matches_an_app_term or matches_a_tech_term:
+                    paper["score"] = current_score * 1.10
+            
+            semantically_ranked_papers.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+            emit_to_user('receive_message', {'sender': 'bot', 'message': "✅ Paper scores boosted and re-sorted."})
         
-        # Step 3: Filtering
-        socketio.emit('receive_message', {'sender': 'bot', 'message': f"🔍 **Step 3/5:** Filtering and cleaning {len(papers)} papers..."})
+        # === Phase 6: Categorization & Final Results ===
+        emit_to_user('receive_message', {'sender': 'bot', 'message': "📋 **Phase 6/7: Categorizing & Preparing Final Results...**"})
         
-        # DOI filtering
-        papers_before = len(papers)
-        papers = filter_by_doi(papers)
-        socketio.emit('receive_message', {'sender': 'bot', 'message': f"✅ DOI validation: {papers_before} → **{len(papers)} papers** (removed {papers_before - len(papers)} without DOI)"})
+        domain_regex_patterns = [re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE) for term in domain_terms_for_patterns if term]
+
+        def check_matches_app(p_dict: Dict) -> bool:
+            txt = (p_dict.get("title", "") + " " + p_dict.get("abstract", "")).lower()
+            return any(pat.search(txt) for pat in app_regex_patterns) if app_regex_patterns else False
+        def check_matches_tech(p_dict: Dict) -> bool:
+            txt = (p_dict.get("title", "") + " " + p_dict.get("abstract", "")).lower()
+            return any(pat.search(txt) for pat in tech_regex_patterns) if tech_regex_patterns else False
+        def count_domain_hits(p_dict: Dict) -> int:
+            txt = (p_dict.get("title", "") + " " + p_dict.get("abstract", "")).lower()
+            return sum(bool(dp.search(txt)) for dp in domain_regex_patterns) if domain_regex_patterns else 0
+
+        DESIRED_FOCUSED_COUNT: int = 20
+        DESIRED_EXPLORATORY_COUNT: int = 10
+        focused_papers: List[Dict] = []
         
-        # Abstract filtering  
-        papers_before = len(papers)
-        papers = filter_by_abstract(papers)
-        socketio.emit('receive_message', {'sender': 'bot', 'message': f"✅ Abstract validation: {papers_before} → **{len(papers)} papers** (removed {papers_before - len(papers)} without abstract)"})
+        for p in semantically_ranked_papers:
+            if len(focused_papers) >= DESIRED_FOCUSED_COUNT: break
+            if check_matches_app(p) and check_matches_tech(p) and count_domain_hits(p) >= 1:
+                focused_papers.append(p)
+        if len(focused_papers) < DESIRED_FOCUSED_COUNT:
+            for p in semantically_ranked_papers:
+                if len(focused_papers) >= DESIRED_FOCUSED_COUNT: break
+                if p in focused_papers: continue
+                if check_matches_app(p) and check_matches_tech(p):
+                    focused_papers.append(p)
+        if len(focused_papers) < DESIRED_FOCUSED_COUNT:
+            for p in semantically_ranked_papers:
+                if len(focused_papers) >= DESIRED_FOCUSED_COUNT: break
+                if p in focused_papers: continue
+                if count_domain_hits(p) >= 1 and (check_matches_app(p) or check_matches_tech(p)):
+                    focused_papers.append(p)
+        final_focused_papers = focused_papers[:DESIRED_FOCUSED_COUNT]
+        focused_paper_dois = {p_item["doi"] for p_item in final_focused_papers if p_item.get("doi")}
+
+        exploratory_candidates = [p for p in semantically_ranked_papers if p.get("doi") not in focused_paper_dois]
+        exploratory_papers: List[Dict] = []
+        for p in exploratory_candidates:
+            if len(exploratory_papers) >= DESIRED_EXPLORATORY_COUNT: break
+            if count_domain_hits(p) >= 2 or (count_domain_hits(p) >= 1 and check_matches_tech(p)):
+                exploratory_papers.append(p)
+        if len(exploratory_papers) < DESIRED_EXPLORATORY_COUNT:
+            for p in exploratory_candidates:
+                if len(exploratory_papers) >= DESIRED_EXPLORATORY_COUNT: break
+                if p in exploratory_papers: continue
+                if count_domain_hits(p) >= 1:
+                    exploratory_papers.append(p)
+        final_exploratory_papers = exploratory_papers[:DESIRED_EXPLORATORY_COUNT]
         
-        # Deduplication
-        papers_before = len(papers)
-        papers = dedupe_by_doi(papers)
-        socketio.emit('receive_message', {'sender': 'bot', 'message': f"✅ Duplicate removal: {papers_before} → **{len(papers)} unique papers** (removed {papers_before - len(papers)} duplicates)"})
-        
-        # Step 4: Semantic Ranking
-        socketio.emit('receive_message', {'sender': 'bot', 'message': "⚖️ **Step 4/5:** Analyzing relevance using AI embeddings..."})
-        socketio.emit('receive_message', {'sender': 'bot', 'message': "🧠 Loading SciBERT model for semantic analysis..."})
-        
-        ranked = semantic_rank_papers(title, papers, top_n=30)
-        socketio.emit('receive_message', {'sender': 'bot', 'message': f"✅ **Ranked all {len(papers)} papers** by relevance to your research!"})
-        
-        # Step 5: Results Preparation
-        socketio.emit('receive_message', {'sender': 'bot', 'message': "📋 **Step 5/5:** Preparing your curated results with APA citations..."})
-        
-        # Calculate timing
-        elapsed_time = time.time() - start_time
+        # --- Results Presentation ---
+        elapsed_time = time.time() - pipeline_start_time
         minutes = int(elapsed_time // 60)
         seconds = int(elapsed_time % 60)
-        
-        # Make sure we have enough results
-        result_count = min(len(ranked), 30)
-        focused_count = min(20, result_count)
-        exploratory_count = max(0, min(10, result_count - focused_count))
-        
-        focused_results = ranked[:focused_count]
-        exploratory_results = ranked[focused_count:focused_count+exploratory_count]
-        
-        # Success message with timing
-        socketio.emit('receive_message', {
-            'sender': 'bot', 
-            'message': f"🎉 **Search completed in {minutes}m {seconds}s!** Found **{len(papers)}** relevant papers, curated into two lists:"
-        })
-        
-        # Send focused results with APA citations
-        socketio.emit('receive_message', {
-            'sender': 'bot', 
-            'message': f"🎯 **TOP {len(focused_results)} FOCUSED RESULTS** (Best matches for your research):"
-        })
-        
-        for i, paper in enumerate(focused_results, 1):
-            result_msg = format_paper_with_citation(paper, i)
-            socketio.emit('receive_message', {'sender': 'bot', 'message': result_msg})
-            time.sleep(0.2)  # Small delay between results for readability
-        
-        # Send exploratory results with APA citations if we have any
-        if exploratory_results:
-            socketio.emit('receive_message', {
-                'sender': 'bot', 
-                'message': f"🔍 **TOP {len(exploratory_results)} EXPLORATORY RESULTS** (Broader related research):"
-            })
-            
-            for i, paper in enumerate(exploratory_results, 1):
+        emit_to_user('receive_message', {'sender': 'bot', 'message': f"🎉 **Search completed in {minutes}m {seconds}s!**"})
+
+        if final_focused_papers:
+            emit_to_user('receive_message', {'sender': 'bot', 'message': f"🎯 **TOP {len(final_focused_papers)} FOCUSED RESULTS**:"})
+            for i, paper in enumerate(final_focused_papers, 1):
                 result_msg = format_paper_with_citation(paper, i)
-                socketio.emit('receive_message', {'sender': 'bot', 'message': result_msg})
-                time.sleep(0.2)  # Small delay between results
+                emit_to_user('receive_message', {'sender': 'bot', 'message': result_msg})
+                socketio.sleep(0.1) 
+        else:
+            emit_to_user('receive_message', {'sender': 'bot', 'message': "ℹ️ No papers met the criteria for 'Focused Results'."})
+
+        if final_exploratory_papers:
+            emit_to_user('receive_message', {'sender': 'bot', 'message': f"🔍 **TOP {len(final_exploratory_papers)} EXPLORATORY RESULTS**:"})
+            for i, paper in enumerate(final_exploratory_papers, 1):
+                result_msg = format_paper_with_citation(paper, i)
+                emit_to_user('receive_message', {'sender': 'bot', 'message': result_msg})
+                socketio.sleep(0.1)
         
-        # Generate complete bibliography
-        all_results = focused_results + exploratory_results
-        if all_results:
-            socketio.emit('receive_message', {
-                'sender': 'bot',
-                'message': "📚 **COMPLETE BIBLIOGRAPHY** (Copy-paste ready for your references):"
-            })
-            
-            bibliography = generate_bibliography(all_results)
-            socketio.emit('receive_message', {'sender': 'bot', 'message': bibliography})
+        all_results_for_bib = final_focused_papers + final_exploratory_papers
+        if all_results_for_bib:
+            emit_to_user('receive_message', {'sender': 'bot', 'message': "📚 **COMPLETE BIBLIOGRAPHY** (APA Style):"})
+            bibliography = generate_bibliography(all_results_for_bib)
+            emit_to_user('receive_message', {'sender': 'bot', 'message': bibliography})
         
-        # Clear processing flag and set search complete flag
-        socketio.emit('set_context', {'processing': False, 'search_complete': True})
-        
-        # Final message
-        socketio.emit('receive_message', {
-            'sender': 'bot',
-            'message': "✅ **Search complete!** 🎉\n\nI've found the most relevant papers for your research with properly formatted APA citations. Would you like to:\n• Search for another topic: 'Research title: [new title]'\n• Ask me questions about the results\n• Get help with other citation formats (MLA, Chicago, etc.)"
-        })
-        
+        emit_to_user('set_context', {'processing': False, 'search_complete': True, 'title': title})
+        emit_to_user('receive_message', {'sender': 'bot', 'message': "✅ **All done!** What would you like to do next? (e.g., 'cite MLA', 'new search: [title]', 'reset')"})
+    
     except Exception as e:
-        import traceback
         error_details = traceback.format_exc()
-        print(f"Error in pipeline: {error_details}")
-        socketio.emit('receive_message', {
+        print(f"ERROR: Unhandled exception in app.py run_pipeline: {error_details}")
+        emit_to_user('receive_message', {
             'sender': 'bot',
-            'message': f"❌ **An error occurred during the search:**\n\n{str(e)}\n\nPlease try again with a different research title or check your internet connection."
+            'message': f"❌ **An unexpected error occurred in the pipeline:**\n\n{str(e)}\n\nPlease try 'reset' or a different research title."
         })
-        # Clear processing flag on error and reset search_complete
-        socketio.emit('set_context', {'processing': False, 'search_complete': False})
+        emit_to_user('set_context', {'processing': False, 'search_complete': False, 'title': title}) # Pass current title to context
+
+        # === Phase 7: Generate AI Insights for Top Papers ===
+        emit_to_user('receive_message', {'sender': 'bot', 'message': "💡 **Phase 7/7: Generating AI-powered insights for top papers...** (This may take a moment)"})
+        
+        # Process focused papers
+        if final_focused_papers:
+            emit_to_user('receive_message', {'sender': 'bot', 'message': f"🧠 Analyzing {len(final_focused_papers)} focused papers..."})
+            for i, paper_dict in enumerate(final_focused_papers):
+                paper_abstract = paper_dict.get('abstract')
+                if paper_abstract and isinstance(paper_abstract, str) and paper_abstract.strip():
+                    # Display progress to the user for each paper or in batches
+                    if (i + 1) % 5 == 0 or i == 0 : # Update every 5 papers or for the first one
+                        emit_to_user('receive_message', {'sender': 'bot', 'message': f"  ↪ Generating insights for focused paper {i+1}/{len(final_focused_papers)}..."})
+                    
+                    insights_data = generate_insights(title, paper_abstract) # 'title' is the main research title
+                    paper_dict['insights_summary'] = insights_data.get('summary', "Summary not available.")
+                    paper_dict['insights_relevance'] = insights_data.get('relevance', "Relevance assessment not available.")
+                    socketio.sleep(2.1) # Sleep to respect Gemini API rate limits (get_next_api_client helps, but good to be cautious)
+                else:
+                    paper_dict['insights_summary'] = "Insight generation skipped: Abstract was missing or empty."
+                    paper_dict['insights_relevance'] = "Relevance assessment skipped: Abstract was missing or empty."
+        
+        # Process exploratory papers
+        if final_exploratory_papers:
+            emit_to_user('receive_message', {'sender': 'bot', 'message': f"🧠 Analyzing {len(final_exploratory_papers)} exploratory papers..."})
+            for i, paper_dict in enumerate(final_exploratory_papers):
+                paper_abstract = paper_dict.get('abstract')
+                if paper_abstract and isinstance(paper_abstract, str) and paper_abstract.strip():
+                    if (i + 1) % 5 == 0 or i == 0:
+                        emit_to_user('receive_message', {'sender': 'bot', 'message': f"  ↪ Generating insights for exploratory paper {i+1}/{len(final_exploratory_papers)}..."})
+
+                    insights_data = generate_insights(title, paper_abstract)
+                    paper_dict['insights_summary'] = insights_data.get('summary', "Summary not available.")
+                    paper_dict['insights_relevance'] = insights_data.get('relevance', "Relevance assessment not available.")
+                    socketio.sleep(2.1) # Sleep to respect Gemini API rate limits
+                else:
+                    paper_dict['insights_summary'] = "Insight generation skipped: Abstract was missing or empty."
+                    paper_dict['insights_relevance'] = "Relevance assessment skipped: Abstract was missing or empty."
+        
+        emit_to_user('receive_message', {'sender': 'bot', 'message': "✅ AI insights generated for top papers."})
+
+        # --- Results Presentation (Phase now becomes 8 or continues from existing numbering) ---
+        # The 'final_focused_papers' and 'final_exploratory_papers' lists now contain the insights.
+        # Your existing result presentation loop will pick these up if you modify the formatting.
+        # For example, in format_paper_with_citation, you can add these new fields.
+
+        elapsed_time = time.time() - pipeline_start_time
+        minutes = int(elapsed_time // 60)
+        seconds = int(elapsed_time % 60)
+        emit_to_user('receive_message', {'sender': 'bot', 'message': f"🎉 **Search and Analysis completed in {minutes}m {seconds}s!**"})
+
+        # ... (The rest of your results presentation logic for focused_papers, exploratory_papers, bibliography) ...
+        # You will need to modify format_paper_with_citation to display these insights.
+        
+        if final_focused_papers:
+            emit_to_user('receive_message', {'sender': 'bot', 'message': f"🎯 **TOP {len(final_focused_papers)} FOCUSED RESULTS (with Insights):**"})
+            for i, paper in enumerate(final_focused_papers, 1):
+                # Modify format_paper_with_citation to include insights_summary and insights_relevance
+                result_msg = format_paper_with_citation_and_insights(paper, i) # New/Modified formatting function
+                emit_to_user('receive_message', {'sender': 'bot', 'message': result_msg})
+                socketio.sleep(0.1) 
+        else:
+            emit_to_user('receive_message', {'sender': 'bot', 'message': "ℹ️ No papers met the criteria for 'Focused Results'."})
+
+        if final_exploratory_papers:
+            emit_to_user('receive_message', {'sender': 'bot', 'message': f"🔍 **TOP {len(final_exploratory_papers)} EXPLORATORY RESULTS (with Insights):**"})
+            for i, paper in enumerate(final_exploratory_papers, 1):
+                # Modify format_paper_with_citation to include insights_summary and insights_relevance
+                result_msg = format_paper_with_citation_and_insights(paper, i) # New/Modified formatting function
+                emit_to_user('receive_message', {'sender': 'bot', 'message': result_msg})
+                socketio.sleep(0.1)
+        
+        all_results_for_bib = final_focused_papers + final_exploratory_papers
+        if all_results_for_bib:
+            emit_to_user('receive_message', {'sender': 'bot', 'message': "📚 **COMPLETE BIBLIOGRAPHY** (APA Style):"})
+            bibliography = generate_bibliography(all_results_for_bib)
+            emit_to_user('receive_message', {'sender': 'bot', 'message': bibliography})
+        
+        emit_to_user('set_context', {'processing': False, 'search_complete': True, 'title': title})
+        emit_to_user('receive_message', {'sender': 'bot', 'message': "✅ **All done!** Insights included. What would you like to do next? (e.g., 'cite MLA', 'new search: [title]', 'reset')"})
+    
+    except Exception as e:
+        error_details = traceback.format_exc()
+        print(f"ERROR: Unhandled exception in app.py run_pipeline: {error_details}")
+        emit_to_user('receive_message', {
+            'sender': 'bot',
+            'message': f"❌ **An unexpected error occurred in the pipeline:**\n\n{str(e)}\n\nPlease try 'reset' or a different research title."
+        })
+        # Ensure context is reset correctly, passing the title that was being processed
+        emit_to_user('set_context', {'processing': False, 'search_complete': False, 'title': title})
 
 # Add a simple health check route for testing
 @app.route('/health')
@@ -569,7 +932,7 @@ if __name__ == '__main__':
         print(f"Warning: Template file {template_file} not found!")
         print("Creating a basic template file...")
         with open(template_file, 'w') as f:
-            f.write("""
+            f.write(r"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
