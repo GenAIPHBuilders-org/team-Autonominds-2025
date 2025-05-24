@@ -90,10 +90,21 @@ Outlined below is the step-by-step execution flow of the AI-powered literature c
     * Papers are categorized into:
         * **Focused Papers**: Matching a combination of Application, Technique, and Domain terms.
         * **Exploratory Papers**: Matching Domain and/or Technique terms, excluding those already in 'Focused'.
-
-13. **Final Output**:
     * The pipeline prints the top **Focused** and **Exploratory** papers (title, year, score, DOI) to the console.
     * The total execution time is reported.
+   
+13.  **🧠 Insight Generation & Thematic Grouping**:
+    * The top-ranked **Focused** and **Exploratory** papers are passed into `identify_themes_and_group` from `theme_classifier.py`.
+    * The Gemini API analyzes the abstracts in batch and outputs:
+        * A list of research themes, each with:
+            * A concise academic title.
+            * A one-to-two sentence description.
+            * A list of relevant paper titles associated with the theme.
+    * The themes and their associated papers are structured into a nested JSON dictionary.
+    * Each individual paper is also passed to `generate_insights` from `extract_insights.py`, which returns:
+        * A formal academic summary of the abstract.
+        * A second-person explanation of how the paper supports or relates to the user’s research title.
+    * These insights are embedded into the paper’s data structure under the keys `insight` and `relevance`.
 
 ```mermaid
 graph TD
