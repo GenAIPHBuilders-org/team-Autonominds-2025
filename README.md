@@ -1,4 +1,4 @@
-# Authematic: (Automatic + Thematic)
+# 📄 Authematic: (Automatic + Thematic)
 
 Authematic is a lightweight, agent-driven assistant that takes a research paper title as input and produces two curated lists of the most relevant academic papers:
 
