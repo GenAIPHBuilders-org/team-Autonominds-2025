@@ -1,6 +1,6 @@
 import os
 import itertools
-from google import genai # Ensure this import is correct based on your setup
+from google import genai 
 
 # Load API keys from environment variables
 API_KEY_1 = os.getenv("GEMINI_API_KEY_1")
@@ -50,9 +50,8 @@ def get_next_api_client():
     
     selected_client = next(client_cycler)
     
-    # Optional: For debugging, you can identify which client is being used.
+    # Optional: For debugging, identify which client is being used.
     # This requires a bit more logic if clients are identical beyond their key.
-    # For now, we'll assume the cycling itself is sufficient.
     # client_id = "Client 1" if selected_client == initialized_clients[0] else "Client 2" if len(initialized_clients) > 1 and selected_client == initialized_clients[1] else "Unknown Client"
     # print(f"DEBUG: Using API {client_id}")
     return selected_client
