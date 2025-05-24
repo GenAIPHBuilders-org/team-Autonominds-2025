@@ -269,6 +269,7 @@ Then open your browser to `http://127.0.0.1:5000/` and:
 
 ## 🔍 Troubleshooting
 - `API Key Issues`: Ensure your Gemini API key is correctly set in the .env file
+  - Be informed that we recommended you use the .env keys as uploaded in this repo. We used two API clients with round-robin substitution system to handle rate limit exhaustion.
 - `Missing Directories`: The web app will automatically create required directories
 - `Model Downloads`: The first run may take longer as it downloads SciBERT
 
