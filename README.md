@@ -165,64 +165,26 @@ graph TD
 ```
 └── team-Autonominds-2025/
     ├── AUTHEMATIC CHANGELOG.txt
+    ├── api_client_manager.py
     ├── embeddings.py
+    ├── extract_insights.py
     ├── filter_and_rank.py
+    ├── keyword_critic.py
     ├── keyword_generation.py
     ├── paper_collector.py
     ├── README.md
     ├── run_pipeline.py
-    ├── __pycache__/
-    │   ├── embeddings.cpython-311.pyc
-    │   ├── filter_and_rank.cpython-311.pyc
-    │   └── paper_collector.cpython-311.pyc
-    ├── web_app/
-    │   ├── .env
-    │   ├── app.py
-    │   ├── requirements.txt
-    │   ├── web_collector.py
-    │   ├── templates/
-    │   │   ├── base.html
-    │   │   └── index.html
-    │   └── static/
-    │       ├── js/
-    │       │   └── main.js
-    │       └── css/
-    │           └── style.css
-    └── .git/
-        ├── COMMIT_EDITMSG
-        ├── config
-        ├── description
-        ├── HEAD
-        ├── index
-        ├── packed-refs
-        ├── logs/
-        │   ├── HEAD
-        │   └── refs/
-        │       ├── heads/
-        │       │   ├── main
-        │       │   └── web-interface
-        │       └── remotes/
-        │           └── origin/
-        │               ├── HEAD
-        │               └── web-interface
-        ├── info/
-        │   └── exclude
-        ├── hooks/
-        │   ├── applypatch-msg.sample
-        │   ├── commit-msg.sample
-        │   ├── fsmonitor-watchman.sample
-        │   ├── post-update.sample
-        │   ├── pre-applypatch.sample
-        │   ├── pre-commit.sample
-        │   ├── pre-merge-commit.sample
-        │   ├── pre-push.sample
-        │   ├── pre-rebase.sample
-        │   ├── pre-receive.sample
-        │   ├── prepare-commit-msg.sample
-        │   ├── push-to-checkout.sample
-        │   └── update.sample
-        └── 
-
+    └── web_app/
+        ├── app.py
+        ├── requirements.txt
+        ├── static/
+        │   ├── css/
+        │   │   └── style.css
+        │   └── js/
+        │       └── main.js
+        └── templates/
+            ├── base.html
+            └── index.html
 ```
 
 ### Core Modules
