@@ -164,6 +164,7 @@ graph TD
 
 ```
 └── team-Autonominds-2025/
+    ├── .env
     ├── AUTHEMATIC CHANGELOG.txt
     ├── api_client_manager.py
     ├── embeddings.py
@@ -175,7 +176,9 @@ graph TD
     ├── README.md
     ├── run_pipeline.py
     └── web_app/
+        ├── .env
         ├── app.py
+        ├── keywords_by_subtheme.json
         ├── requirements.txt
         ├── static/
         │   ├── css/
