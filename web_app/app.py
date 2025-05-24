@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import traceback
+import time
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO
@@ -29,6 +30,176 @@ socketio = SocketIO(app)
 # Load environment variables
 from dotenv import load_dotenv
 load_dotenv()
+
+# ==================== CITATION FUNCTIONS ====================
+
+def format_apa_citation(paper):
+    """
+    Format a paper dictionary into APA citation style.
+    
+    Args:
+        paper (dict): Paper dictionary with keys: title, authors, year, doi
+    
+    Returns:
+        str: Formatted APA citation
+    """
+    try:
+        # Extract basic information
+        title = paper.get('title', 'Untitled').strip()
+        year = paper.get('year', 'n.d.')
+        doi = paper.get('doi', '')
+        authors = paper.get('authors', [])
+        
+        # Format authors
+        if not authors:
+            author_text = "Author, A."
+        elif len(authors) == 1:
+            author_text = format_author_apa(authors[0])
+        elif len(authors) == 2:
+            author_text = f"{format_author_apa(authors[0])}, & {format_author_apa(authors[1])}"
+        elif len(authors) <= 20:
+            formatted_authors = [format_author_apa(author) for author in authors[:-1]]
+            author_text = ", ".join(formatted_authors) + f", & {format_author_apa(authors[-1])}"
+        else:
+            # For more than 20 authors, list first 19, then "...", then last author
+            formatted_authors = [format_author_apa(author) for author in authors[:19]]
+            author_text = ", ".join(formatted_authors) + f", ... {format_author_apa(authors[-1])}"
+        
+        # Clean and format title
+        if not title.endswith('.'):
+            title += '.'
+        
+        # Format DOI or URL
+        if doi and doi.startswith('https://doi.org/'):
+            doi_text = doi
+        elif doi and not doi.startswith('http'):
+            doi_text = f"https://doi.org/{doi}"
+        elif doi:
+            doi_text = doi
+        else:
+            doi_text = ""
+        
+        # Build citation
+        citation_parts = []
+        citation_parts.append(f"{author_text} ({year}).")
+        citation_parts.append(f"{title}")
+        
+        if doi_text:
+            citation_parts.append(f"{doi_text}")
+        
+        return " ".join(citation_parts)
+        
+    except Exception as e:
+        print(f"Error formatting citation: {e}")
+        return f"Error formatting citation for: {paper.get('title', 'Unknown title')}"
+
+def format_author_apa(author_name):
+    """
+    Format a single author name in APA style (Last, F. M.)
+    
+    Args:
+        author_name (str): Full author name
+    
+    Returns:
+        str: APA formatted author name
+    """
+    if not author_name or not isinstance(author_name, str):
+        return "Author, A."
+    
+    # Clean the name
+    name = author_name.strip()
+    
+    # Handle different name formats
+    if ',' in name:
+        # Already in "Last, First" format
+        parts = name.split(',', 1)
+        last_name = parts[0].strip()
+        first_part = parts[1].strip() if len(parts) > 1 else ""
+    else:
+        # Assume "First Last" or "First Middle Last" format
+        name_parts = name.split()
+        if len(name_parts) == 1:
+            return f"{name_parts[0]}, A."
+        else:
+            last_name = name_parts[-1]
+            first_part = " ".join(name_parts[:-1])
+    
+    # Format first names and initials
+    if first_part:
+        # Extract initials from first/middle names
+        first_names = first_part.split()
+        initials = []
+        for fname in first_names:
+            if fname and len(fname) > 0:
+                initials.append(f"{fname[0].upper()}.")
+        
+        if initials:
+            return f"{last_name}, {' '.join(initials)}"
+        else:
+            return f"{last_name}, A."
+    else:
+        return f"{last_name}, A."
+
+def generate_bibliography(papers):
+    """
+    Generate a complete bibliography from a list of papers.
+    
+    Args:
+        papers (list): List of paper dictionaries
+    
+    Returns:
+        str: Formatted bibliography
+    """
+    if not papers:
+        return "No papers to cite."
+    
+    citations = []
+    for paper in papers:
+        citation = format_apa_citation(paper)
+        citations.append(citation)
+    
+    # Sort alphabetically by first author's last name
+    citations.sort()
+    
+    bibliography = "**BIBLIOGRAPHY (APA Style)**\n\n"
+    for i, citation in enumerate(citations, 1):
+        bibliography += f"{citation}\n\n"
+    
+    return bibliography
+
+def format_paper_with_citation(paper, index):
+    """
+    Format a single paper result with its APA citation.
+    
+    Args:
+        paper (dict): Paper dictionary
+        index (int): Paper number in the list
+    
+    Returns:
+        str: Formatted paper with citation
+    """
+    # Basic paper info
+    result_msg = f"**{index}.** **{paper['title']}** ({paper.get('year', 'N/A')})\n"
+    
+    # Authors
+    authors = paper.get('authors', [])
+    if authors:
+        author_text = ', '.join(authors[:3])
+        if len(authors) > 3:
+            author_text += f" and {len(authors)-3} more"
+        result_msg += f"   👥 **Authors:** {author_text}\n"
+    
+    # DOI and Score
+    result_msg += f"   🔗 **DOI:** {paper.get('doi', 'N/A')}\n"
+    result_msg += f"   📊 **Relevance Score:** {paper.get('score', 0):.4f}\n"
+    
+    # APA Citation
+    apa_citation = format_apa_citation(paper)
+    result_msg += f"   📚 **APA Citation:** {apa_citation}"
+    
+    return result_msg
+
+# ==================== FLASK ROUTES ====================
 
 @app.route('/')
 def index():
@@ -103,7 +274,7 @@ def handle_message(data):
         # Generate progress message
         socketio.emit('receive_message', {
             'sender': 'bot',
-            'message': f"Processing your request for papers on '{title}' published since {year}. This may take a minute..."
+            'message': f"🚀 Starting paper search for '{title}' (≥{year}). This will take 2-3 minutes. I'll keep you updated on my progress!"
         })
         
         # Set processing flag to prevent duplicate requests
@@ -115,8 +286,24 @@ def handle_message(data):
     
     # Handle general questions after search is complete
     if context.get('search_complete'):
+        # Handle citation-related questions
+        if 'citation' in user_message.lower() or 'cite' in user_message.lower():
+            socketio.emit('receive_message', {
+                'sender': 'bot',
+                'message': "📚 **Citation Help:**\n\nI've already provided APA citations for all the papers I found. Here are some tips:\n\n• **APA Format**: Author, A. A. (Year). Title of paper. DOI or URL\n• **Copy Citations**: You can copy the APA citations I provided directly into your reference list\n• **Bibliography**: I've also generated a complete bibliography at the end of your results\n\n**Need other formats?** I can help explain MLA, Chicago, or IEEE citation styles if needed!"
+            })
+        elif 'mla' in user_message.lower():
+            socketio.emit('receive_message', {
+                'sender': 'bot',
+                'message': "📖 **MLA Citation Format:**\n\nMLA format looks like this:\n**Author Last, First. \"Title of Paper.\" *Journal Name*, vol. #, no. #, Year, pp. ##-##. DOI or URL.**\n\nExample:\n*Smith, John. \"Machine Learning Applications.\" AI Research Journal, vol. 15, no. 3, 2023, pp. 45-62. https://doi.org/10.1000/example.*\n\nWould you like me to help you convert any specific citations to MLA format?"
+            })
+        elif 'chicago' in user_message.lower():
+            socketio.emit('receive_message', {
+                'sender': 'bot',
+                'message': "📑 **Chicago Citation Format:**\n\n**Notes-Bibliography Style:**\nAuthor Last, First. \"Title of Paper.\" Journal Name vol. #, no. # (Year): ##-##. DOI or URL.\n\n**Author-Date Style:**\nAuthor Last, First. Year. \"Title of Paper.\" Journal Name vol. # (no. #): ##-##. DOI or URL.\n\nExample (Author-Date):\n*Smith, John. 2023. \"Machine Learning Applications.\" AI Research Journal 15 (3): 45-62. https://doi.org/10.1000/example.*"
+            })
         # Handle general chat questions
-        if user_message.lower() in ['hi', 'hello', 'hey']:
+        elif user_message.lower() in ['hi', 'hello', 'hey']:
             socketio.emit('receive_message', {
                 'sender': 'bot',
                 'message': "Hello! I'm Authematic, your literature curation assistant. I can help you find relevant academic papers for your research. How can I help you today?"
@@ -124,18 +311,18 @@ def handle_message(data):
         elif 'who are you' in user_message.lower():
             socketio.emit('receive_message', {
                 'sender': 'bot',
-                'message': "I'm Authematic, an AI-powered literature curation assistant designed to help researchers find relevant academic papers. I use natural language processing and semantic ranking to identify the most relevant papers for your research topics."
+                'message': "I'm Authematic, an AI-powered literature curation assistant designed to help researchers find relevant academic papers. I use natural language processing and semantic ranking to identify the most relevant papers for your research topics, and I provide properly formatted APA citations for all results!"
             })
         elif 'how do you work' in user_message.lower() or 'what can you do' in user_message.lower():
             socketio.emit('receive_message', {
                 'sender': 'bot',
-                'message': "I help you find academic papers by:\n\n1. Analyzing your research title\n2. Generating relevant academic topics and keywords\n3. Searching multiple sources (arXiv, Semantic Scholar, etc.)\n4. Filtering and ranking papers using SciBERT embeddings\n5. Presenting you with focused and exploratory results\n\nTo start, just type 'Research title: [your research topic]'"
+                'message': "I help you find academic papers by:\n\n1. Analyzing your research title\n2. Generating relevant academic topics and keywords\n3. Searching multiple sources (arXiv, Semantic Scholar, etc.)\n4. Filtering and ranking papers using SciBERT embeddings\n5. Presenting you with focused and exploratory results\n6. **Providing APA citations** for all papers found\n7. **Generating a complete bibliography** ready for your references\n\nTo start, just type 'Research title: [your research topic]'"
             })
         else:
             # For any other message, prompt for a research title
             socketio.emit('receive_message', {
                 'sender': 'bot',
-                'message': "I'm designed to help with academic literature curation. If you'd like to search for papers, please provide a research title by saying 'Research title: [your title]'"
+                'message': "I'm designed to help with academic literature curation and citations. If you'd like to search for papers, please provide a research title by saying 'Research title: [your title]'"
             })
         return
     
@@ -144,7 +331,7 @@ def handle_message(data):
     if context.get('processing'):
         socketio.emit('receive_message', {
             'sender': 'bot',
-            'message': "I'm still processing your request. This may take a few minutes..."
+            'message': "I'm still working on your search! Please be patient as I scan through thousands of academic papers. This usually takes 2-3 minutes."
         })
     # If we have a title but not processing yet, assume this is a year
     elif context.get('title') and not context.get('processing'):
@@ -156,7 +343,7 @@ def handle_message(data):
         title = context.get('title')
         socketio.emit('receive_message', {
             'sender': 'bot',
-            'message': f"Processing your request for papers on '{title}' published since {year}. This may take a minute..."
+            'message': f"🚀 Starting paper search for '{title}' (≥{year}). This will take 2-3 minutes. I'll keep you updated!"
         })
         socketio.emit('set_context', {'processing': True, 'search_complete': False})
         socketio.start_background_task(run_pipeline, title, int(year))
@@ -164,37 +351,84 @@ def handle_message(data):
     else:
         socketio.emit('receive_message', {
             'sender': 'bot',
-            'message': "I can help you find relevant academic papers. Please provide a research title by saying 'Research title: [your title]'"
+            'message': "I can help you find relevant academic papers with properly formatted citations. Please provide a research title by saying 'Research title: [your title]'"
         })
 
 def run_pipeline(title, cutoff_year):
     try:
-        # Send progress updates
-        socketio.emit('receive_message', {'sender': 'bot', 'message': "📊 **Step 1/5:** Generating topics and keywords..."})
+        start_time = time.time()
         
-        # 1. Generate topics and keywords
+        # Step 1: Topic and Keyword Generation
+        socketio.emit('receive_message', {'sender': 'bot', 'message': "📊 **Step 1/5:** Analyzing your research title and generating relevant topics..."})
+        
+        # Generate topics
         related_topics = generate_topics(title)
-        socketio.emit('receive_message', {'sender': 'bot', 'message': f"Generated topics: {', '.join(related_topics)}"})
+        socketio.emit('receive_message', {'sender': 'bot', 'message': f"✅ Generated **{len(related_topics)} research topics:**\n• {chr(10).join(['• ' + topic for topic in related_topics])}"})
         
+        # Generate keywords
+        socketio.emit('receive_message', {'sender': 'bot', 'message': "🔍 Creating search keywords for each topic..."})
         keywords_by_topic = generate_keywords(related_topics)
+        
+        total_keywords = sum(len(keywords) for keywords in keywords_by_topic.values())
+        socketio.emit('receive_message', {'sender': 'bot', 'message': f"✅ Generated **{total_keywords} search keywords** across all topics"})
+        
+        # Generate domain terms
         domain_terms = generate_domain_terms(title, max_terms=10)
+        socketio.emit('receive_message', {'sender': 'bot', 'message': f"✅ Identified **{len(domain_terms)} domain-specific terms** for filtering"})
         
-        # 2. Collect papers
-        socketio.emit('receive_message', {'sender': 'bot', 'message': "📚 **Step 2/5:** Collecting papers from academic sources..."})
+        # Step 2: Paper Collection
+        socketio.emit('receive_message', {'sender': 'bot', 'message': "📚 **Step 2/5:** Searching academic databases..."})
+        socketio.emit('receive_message', {'sender': 'bot', 'message': "🔍 **Searching arXiv** (preprint server)..."})
+        
+        # Show keyword search progress
+        total_searches = len(related_topics)
+        for i, (topic, keywords) in enumerate(keywords_by_topic.items(), 1):
+            socketio.emit('receive_message', {
+                'sender': 'bot', 
+                'message': f"🔍 **Searching topic {i}/{total_searches}:** {topic[:50]}{'...' if len(topic) > 50 else ''}"
+            })
+            socketio.emit('receive_message', {
+                'sender': 'bot', 
+                'message': f"   → Using keywords: {', '.join(keywords[:3])}{'...' if len(keywords) > 3 else ''}"
+            })
+            time.sleep(0.5)  # Small delay to show progress
+        
+        # Collect papers
         papers = collect_papers(keywords_by_topic, cutoff_year)
+        socketio.emit('receive_message', {'sender': 'bot', 'message': f"✅ **Found {len(papers)} papers** from all sources!"})
         
-        # 3. Filter and rank
-        socketio.emit('receive_message', {'sender': 'bot', 'message': f"🔍 **Step 3/5:** Processing {len(papers)} papers..."})
+        # Step 3: Filtering
+        socketio.emit('receive_message', {'sender': 'bot', 'message': f"🔍 **Step 3/5:** Filtering and cleaning {len(papers)} papers..."})
+        
+        # DOI filtering
+        papers_before = len(papers)
         papers = filter_by_doi(papers)
+        socketio.emit('receive_message', {'sender': 'bot', 'message': f"✅ DOI validation: {papers_before} → **{len(papers)} papers** (removed {papers_before - len(papers)} without DOI)"})
+        
+        # Abstract filtering  
+        papers_before = len(papers)
         papers = filter_by_abstract(papers)
+        socketio.emit('receive_message', {'sender': 'bot', 'message': f"✅ Abstract validation: {papers_before} → **{len(papers)} papers** (removed {papers_before - len(papers)} without abstract)"})
+        
+        # Deduplication
+        papers_before = len(papers)
         papers = dedupe_by_doi(papers)
+        socketio.emit('receive_message', {'sender': 'bot', 'message': f"✅ Duplicate removal: {papers_before} → **{len(papers)} unique papers** (removed {papers_before - len(papers)} duplicates)"})
         
-        # 4. Semantic ranking
-        socketio.emit('receive_message', {'sender': 'bot', 'message': "⚖️ **Step 4/5:** Ranking papers by relevance..."})
+        # Step 4: Semantic Ranking
+        socketio.emit('receive_message', {'sender': 'bot', 'message': "⚖️ **Step 4/5:** Analyzing relevance using AI embeddings..."})
+        socketio.emit('receive_message', {'sender': 'bot', 'message': "🧠 Loading SciBERT model for semantic analysis..."})
+        
         ranked = semantic_rank_papers(title, papers, top_n=30)
+        socketio.emit('receive_message', {'sender': 'bot', 'message': f"✅ **Ranked all {len(papers)} papers** by relevance to your research!"})
         
-        # 5. Format and return results
-        socketio.emit('receive_message', {'sender': 'bot', 'message': "📋 **Step 5/5:** Preparing results..."})
+        # Step 5: Results Preparation
+        socketio.emit('receive_message', {'sender': 'bot', 'message': "📋 **Step 5/5:** Preparing your curated results with APA citations..."})
+        
+        # Calculate timing
+        elapsed_time = time.time() - start_time
+        minutes = int(elapsed_time // 60)
+        seconds = int(elapsed_time % 60)
         
         # Make sure we have enough results
         result_count = min(len(ranked), 30)
@@ -204,42 +438,45 @@ def run_pipeline(title, cutoff_year):
         focused_results = ranked[:focused_count]
         exploratory_results = ranked[focused_count:focused_count+exploratory_count]
         
-        # Send focused results
+        # Success message with timing
         socketio.emit('receive_message', {
             'sender': 'bot', 
-            'message': f"🎯 **Top {len(focused_results)} Focused Results:**"
+            'message': f"🎉 **Search completed in {minutes}m {seconds}s!** Found **{len(papers)}** relevant papers, curated into two lists:"
+        })
+        
+        # Send focused results with APA citations
+        socketio.emit('receive_message', {
+            'sender': 'bot', 
+            'message': f"🎯 **TOP {len(focused_results)} FOCUSED RESULTS** (Best matches for your research):"
         })
         
         for i, paper in enumerate(focused_results, 1):
-            result_msg = f"{i}. **{paper['title']}** ({paper.get('year', 'N/A')})\n"
-            authors = paper.get('authors', [])
-            if authors:
-                author_text = ', '.join(authors[:3])
-                if len(authors) > 3:
-                    author_text += f" and {len(authors)-3} more"
-                result_msg += f"   **Authors:** {author_text}\n"
-            result_msg += f"   **DOI:** {paper.get('doi', 'N/A')}\n"
-            result_msg += f"   **Score:** {paper.get('score', 0):.4f}"
+            result_msg = format_paper_with_citation(paper, i)
             socketio.emit('receive_message', {'sender': 'bot', 'message': result_msg})
+            time.sleep(0.2)  # Small delay between results for readability
         
-        # Send exploratory results if we have any
+        # Send exploratory results with APA citations if we have any
         if exploratory_results:
             socketio.emit('receive_message', {
                 'sender': 'bot', 
-                'message': f"🔍 **Top {len(exploratory_results)} Exploratory Results:**"
+                'message': f"🔍 **TOP {len(exploratory_results)} EXPLORATORY RESULTS** (Broader related research):"
             })
             
             for i, paper in enumerate(exploratory_results, 1):
-                result_msg = f"{i}. **{paper['title']}** ({paper.get('year', 'N/A')})\n"
-                authors = paper.get('authors', [])
-                if authors:
-                    author_text = ', '.join(authors[:3])
-                    if len(authors) > 3:
-                        author_text += f" and {len(authors)-3} more"
-                    result_msg += f"   **Authors:** {author_text}\n"
-                result_msg += f"   **DOI:** {paper.get('doi', 'N/A')}\n"
-                result_msg += f"   **Score:** {paper.get('score', 0):.4f}"
+                result_msg = format_paper_with_citation(paper, i)
                 socketio.emit('receive_message', {'sender': 'bot', 'message': result_msg})
+                time.sleep(0.2)  # Small delay between results
+        
+        # Generate complete bibliography
+        all_results = focused_results + exploratory_results
+        if all_results:
+            socketio.emit('receive_message', {
+                'sender': 'bot',
+                'message': "📚 **COMPLETE BIBLIOGRAPHY** (Copy-paste ready for your references):"
+            })
+            
+            bibliography = generate_bibliography(all_results)
+            socketio.emit('receive_message', {'sender': 'bot', 'message': bibliography})
         
         # Clear processing flag and set search complete flag
         socketio.emit('set_context', {'processing': False, 'search_complete': True})
@@ -247,7 +484,7 @@ def run_pipeline(title, cutoff_year):
         # Final message
         socketio.emit('receive_message', {
             'sender': 'bot',
-            'message': "✅ **Search complete!** Is there another research topic you'd like to explore? Just say 'Research title: [your new title]'"
+            'message': "✅ **Search complete!** 🎉\n\nI've found the most relevant papers for your research with properly formatted APA citations. Would you like to:\n• Search for another topic: 'Research title: [new title]'\n• Ask me questions about the results\n• Get help with other citation formats (MLA, Chicago, etc.)"
         })
         
     except Exception as e:
@@ -256,7 +493,7 @@ def run_pipeline(title, cutoff_year):
         print(f"Error in pipeline: {error_details}")
         socketio.emit('receive_message', {
             'sender': 'bot',
-            'message': f"❌ **An error occurred:** {str(e)}\n\nPlease try again with a different research title or year."
+            'message': f"❌ **An error occurred during the search:**\n\n{str(e)}\n\nPlease try again with a different research title or check your internet connection."
         })
         # Clear processing flag on error and reset search_complete
         socketio.emit('set_context', {'processing': False, 'search_complete': False})
@@ -354,14 +591,15 @@ if __name__ == '__main__':
         <div class="row">
             <div class="col-md-12">
                 <div class="card mb-4">
-                    <div class="card-header">
-                        <h5>Authematic Chat Interface</h5>
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">Authematic Chat Interface</h5>
+                        <button id="reset-button" class="btn btn-outline-secondary btn-sm">Reset</button>
                     </div>
                     <div class="card-body">
                         <div id="chat-messages" class="chat-container mb-3">
                             <div class="message bot">
                                 <div class="message-content">
-                                    Welcome to Authematic! I can help you find relevant academic papers. 
+                                    Welcome to Authematic! I can help you find relevant academic papers with proper APA citations. 
                                     Please provide your research title by saying "Research title: [your title]"
                                 </div>
                             </div>
@@ -391,6 +629,7 @@ if __name__ == '__main__':
             const chatMessages = document.getElementById('chat-messages');
             const userInput = document.getElementById('user-input');
             const sendButton = document.getElementById('send-button');
+            const resetButton = document.getElementById('reset-button');
             
             // Initialize Socket.IO
             const socket = io();
@@ -422,6 +661,11 @@ if __name__ == '__main__':
             // Send message on button click
             sendButton.addEventListener('click', function() {
                 sendMessage();
+            });
+            
+            // Reset button functionality
+            resetButton.addEventListener('click', function() {
+                clearChatContext();
             });
             
             // Send message on Enter key
@@ -488,6 +732,20 @@ if __name__ == '__main__':
                 chatMessages.appendChild(indicator);
                 chatMessages.scrollTop = chatMessages.scrollHeight;
             }
+            
+            // Function to clear chat context
+            function clearChatContext() {
+                chatContext = {};
+                localStorage.removeItem('chatContext');
+                
+                // Clear chat messages except welcome
+                while (chatMessages.childNodes.length > 1) {
+                    chatMessages.removeChild(chatMessages.lastChild);
+                }
+                
+                // Add reset message
+                appendMessage('bot', 'Conversation has been reset. You can start a new search by providing a research title.');
+            }
         });
     </script>
 </body>
@@ -527,6 +785,7 @@ if __name__ == '__main__':
     padding: 10px 15px;
     border-radius: 15px;
     display: inline-block;
+    word-wrap: break-word;
 }
 
 .user .message-content {
@@ -579,6 +838,35 @@ if __name__ == '__main__':
 @keyframes bounce {
     0%, 60%, 100% { transform: translateY(0); }
     30% { transform: translateY(-5px); }
+}
+
+/* Progress animations */
+.progress-message {
+    animation: fadeIn 0.5s ease-in;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Citation formatting */
+.citation-text {
+    font-family: 'Courier New', monospace;
+    font-size: 0.9em;
+    background-color: #f8f9fa;
+    padding: 5px;
+    border-left: 3px solid #007bff;
+    margin: 5px 0;
+}
+
+/* Bibliography section */
+.bibliography-section {
+    background-color: #fff;
+    border: 1px solid #dee2e6;
+    border-radius: 5px;
+    padding: 15px;
+    margin: 10px 0;
 }
             """)
     
