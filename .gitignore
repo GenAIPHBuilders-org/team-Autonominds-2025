@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# Dotenv
+.env*
+
+# Authematic Specific - Ignore our database!
+web_app/chroma_db_store/
+
+# IDE specific
+.vscode/
+.idea/
+
+# Other
+*.log
+*.pot
+*.swo
+*.swp
+*.json
