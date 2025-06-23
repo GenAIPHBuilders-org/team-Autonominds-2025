@@ -24,48 +24,74 @@ The diagram below illustrates the system's two main stages. First, the **Core Pi
 
 ```mermaid
 graph TD
-    subgraph "User Interface"
-        direction LR
-        WebApp["Web App (Flask + SocketIO)"]
+    subgraph "User Interaction (Frontend)"
+        A[Start: User visits web app] --> B{User provides Research Title & Cutoff Year in chat};
     end
 
-    subgraph "Core Pipeline (Backend)"
-        direction TB
-        A["Input: Research Title, Year"] --> B["Keyword Generation & Critique (Gemini API)"];
-        B --> C["Paper Collection (arXiv, PubMed, etc.)"];
-        C --> D["Filtering & Enrichment (filter_and_rank.py)"];
-        D --> E["Semantic Ranking (SciBERT Embeddings)"];
-        E --> F["Categorization (Focused & Exploratory)"];
-        F --> G["AI Insight Generation (Gemini API)"];
+    subgraph "Pipeline Orchestration (web_app/app.py)"
+        B --> C[Socket 'send_message' triggers run_pipeline in background];
+        C --> D["Phase 1: Generate & Refine Keywords"];
+        D --> E["Phase 2 & 3: Collect & Filter Papers"];
+        E --> F["Phase 4: Generate Thematic Terms"];
+        F --> G["Phase 5 & 6: Rank & Categorize Papers"];
+        G --> H["Phase 7: Enrich Papers with AI Insights"];
+        H --> I["Final Step: Build RAG Index in ChromaDB"];
+        I --> J[Emit 'results_ready' to Frontend];
     end
 
-    subgraph "RAG System (Chat)"
-        direction TB
-        H["Index Paper Abstracts (ChromaDB Vector Store)"]
-        I["User Chat Query"] --> J{"Query Analysis"};
-        J -- "General Question" --> K["1. Embed Query (SciBERT)"];
-        K --> L["2. Retrieve Relevant Chunks from ChromaDB"];
-        L --> M["3. Generate Grounded Answer (Gemini API + Context)"];
-        J -- "Paper-Specific Question" --> N["1. Get Paper Abstract"];
-        N --> M;
-        M --> O["Display Answer in UI"]
+    subgraph "Phase 1 Details: Keywords"
+        D --> D1["generate_topics (Gemini)"];
+        D1 --> D2["generate_subthemes (Gemini)"];
+        D2 --> D3["generate_keywords_by_subtheme (Gemini)"];
+        D3 --> D4["critique_list (Gemini) to refine keywords"];
     end
 
-    %% Connections
-    WebApp --> A;
-    G --> WebApp;
-    G --> H;
-    H --> J;
-    O --> WebApp;
+    subgraph "Phase 2 & 3 Details: Collection"
+        E --> E1["collect_papers orchestrates concurrent fetches"];
+        E1 --> E2["- search_arxiv"];
+        E1 --> E3["- search_pubmed"];
+        E1 --> E4["- search_crossref"];
+        E2 & E3 & E4 --> E5["Aggregate results & Enrich with Semantic Scholar"];
+        E5 --> E6["Apply initial filters: filter_by_doi, filter_by_abstract, dedupe_by_doi"];
+    end
 
-    classDef web fill:#e8f5e9,stroke:#388e3c
-    classDef pipeline fill:#e3f2fd,stroke:#1976d2
-    classDef rag fill:#fff3e0,stroke:#f57c00
-    classDef io fill:#f3e5f5,stroke:#7b1fa2
+    subgraph "Phase 4 Details: Thematic Terms"
+        F --> F1["generate_domain_terms (Gemini)"];
+        F --> F2["generate_app_terms (Gemini)"];
+        F --> F3["generate_tech_terms (Gemini)"];
+        F1 & F2 & F3 --> F4["critique_list (Gemini) to refine all terms"];
+        F4 --> F5["clean_terms to remove stopwords"];
+    end
 
-    class WebApp,I,O io;
-    class A,B,C,D,E,F,G pipeline;
-    class H,J,K,L,M,N rag;
+    subgraph "Phase 5 & 6 Details: Ranking"
+        G --> G1["Optional: Tech Term Clustering (SciBERT Embeddings + KMeans)"];
+        G1 --> G2["semantic_rank_papers (SciBERT Cosine Similarity)"];
+        G2 --> G3["Boost Scores based on thematic term matches"];
+        G3 --> G4["Categorize into 'Focused' (Top 20) & 'Exploratory' (Top 10) lists"];
+    end
+
+    subgraph "Phase 7 Details: Insights"
+        H --> H1["For each paper, call generate_insights (Gemini)"];
+        H1 --> H2["Attach AI Summary & Relevance explanation to paper data"];
+    end
+
+    subgraph "Results & Post-Pipeline Interaction"
+        J --> K["Frontend UI (main.js) dynamically builds tabbed interface for results"];
+        K --> L{"User interacts with new chat sidebar"};
+        L -- "General Chat" --> M["get_general_rag_response queries ChromaDB RAG index"];
+        L -- "Specific Paper Chat" --> N["get_single_paper_response uses single paper's abstract"];
+        M & N --> O[Send chat response to user];
+    end
+
+    %% Styling
+    classDef user fill:#e1f5fe,stroke:#0277bd,stroke-width:2px;
+    classDef pipeline fill:#fff3e0,stroke:#ef6c00,stroke-width:2px;
+    classDef details fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px;
+    classDef result fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
+
+    class A,B,L,O user;
+    class C,J,K pipeline;
+    class D,E,F,G,H,I,D1,D2,D3,D4,E1,E2,E3,E4,E5,E6,F1,F2,F3,F4,F5,G1,G2,G3,G4,H1,H2,M,N details;
 ```
 
 -----
