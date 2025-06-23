@@ -53,7 +53,7 @@ def critique_list(
         f"}}\n"
     )
     try:
-        model_instance = genai.GenerativeModel("gemini-2.5-flash-preview-04-17")
+        model_instance = genai.GenerativeModel("gemini-2.0-flash")
         resp = model_instance.generate_content(contents=prompt)
         time.sleep(5)
         raw = resp.text
