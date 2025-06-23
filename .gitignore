@@ -11,6 +11,7 @@ env/
 
 # Dotenv
 .env*
+!.env.example
 
 # Authematic Specific - Ignore our database!
 web_app/chroma_db_store/

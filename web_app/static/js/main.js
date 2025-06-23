@@ -3,7 +3,9 @@ let chatContext = JSON.parse(localStorage.getItem('chatContext') || '{}');
 
 document.addEventListener('DOMContentLoaded', function() {
 
-    const chatMessages = document.getElementById('chat-messages');
+    // Use the inner chat-history container so the initial welcome message
+    // remains intact and new messages append correctly
+    const chatMessages = document.querySelector('#chat-messages .chat-history');
     const userInput = document.getElementById('user-input');
     const sendButton = document.getElementById('send-button');
     const resetButton = document.getElementById('reset-button');
@@ -30,6 +32,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // Handle connection
     socket.on('connect', function() {
         console.log('Connected to server');
+        clearChatContext(false);               // ensure fresh state for new sessions without bot message
     });
     
     // Handle disconnection
@@ -48,6 +51,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
     const progressLogContainer = document.getElementById('progress-log-container');
     const progressLog = document.getElementById('progress-log');
+    // The surrounding card body becomes scrollable when the log grows, so keep
+    // a reference to it for auto-scrolling
+    const logCardBody = document.querySelector('#log-column .card-body');
     let logShown = false;
 
     socket.on('progress_update', function(data) {
@@ -70,7 +76,13 @@ document.addEventListener('DOMContentLoaded', function() {
         p.className = 'mb-1 font-monospace';
         p.textContent = data.message;
         progressLog.appendChild(p);
+        // Ensure both the log itself and its scrollable container stay
+        // scrolled to the bottom so the latest output is visible without
+        // manual scrolling
         progressLog.scrollTop = progressLog.scrollHeight;
+        if (logCardBody) {
+            logCardBody.scrollTop = logCardBody.scrollHeight;
+        }
     });
 
     
@@ -93,6 +105,12 @@ document.addEventListener('DOMContentLoaded', function() {
     if (resetButton) {
         resetButton.addEventListener('click', function() {
             clearChatContext();
+            socket.emit('send_message', {
+                message: 'reset',
+                context: chatContext
+            });
+            showTypingIndicator(chatMessages);
+            userInput.value = '';
             userInput.focus();
         });
     }
@@ -125,15 +143,20 @@ document.addEventListener('DOMContentLoaded', function() {
         const usingTabs = activePane && chatContext.search_complete;
 
         if (usingTabs) {
-            const targetHistory = activePane.querySelector('.chat-history');
-            appendMessage('user', message, targetHistory);
-
+            let targetHistory;
             let context = {};
+
             if (activePane.id === 'pane-general') {
+
+                targetHistory = activePane.querySelector('.chat-history');
+
                 context = { type: 'general' };
             } else {
+                targetHistory = activePane.querySelector('.chat-history');
                 context = { type: 'specific', doi: activePane.dataset.doi };
             }
+
+            appendMessage('user', message, targetHistory);
 
             socket.emit('sidebar_chat_message', {
                 query: message,
@@ -189,18 +212,45 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     // Function to clear chat context
-    function clearChatContext() {
+    function clearChatContext(showMessage = true) {
         chatContext = {};
         localStorage.removeItem('chatContext');
         console.log('Context cleared');
-        
+
+        // Reset UI layout (hide tabs and event log, restore main column)
+        const tabsCol = document.getElementById('tabs-column');
+        const tabsContainer = document.getElementById('results-tabs');
+        const contentContainer = document.getElementById('results-tab-content');
+        const generalPane = document.getElementById('pane-general');
+
+        if (tabsCol) {
+            tabsCol.classList.add('d-none');
+        }
+        if (tabsContainer) {
+            tabsContainer.innerHTML = '';
+        }
+        if (contentContainer && generalPane) {
+            contentContainer.innerHTML = '';
+            contentContainer.appendChild(generalPane);
+            generalPane.classList.add('show', 'active');
+        }
+
+        if (logColumn) {
+            logColumn.classList.add('d-none');
+            progressLogContainer.style.display = 'none';
+            logShown = false;
+        }
+        document.getElementById('main-column').className = 'col-md-12';
+
         // Clear chat messages except welcome
         while (chatMessages.childNodes.length > 1) {
             chatMessages.removeChild(chatMessages.lastChild);
         }
         
-        // Add reset message
-        appendMessage('bot', 'Conversation has been reset. You can start a new search by providing a research title.');
+        if (showMessage) {
+            // Add reset message
+            appendMessage('bot', 'Conversation has been reset. You can start a new search by providing a research title.');
+        }
     }
     
     // Focus on input field on load
@@ -325,6 +375,24 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             generalHistoryDiv.scrollTop = generalHistoryDiv.scrollHeight;
         }
+
+        // Ensure tabs behave as a single group
+        const tabLinks = tabsContainer.querySelectorAll('button.nav-link[data-bs-toggle="tab"]');
+        tabLinks.forEach(link => {
+            link.addEventListener('shown.bs.tab', function(e) {
+                const targetPane = document.querySelector(e.target.dataset.bsTarget);
+                document.querySelectorAll('#results-tab-content .tab-pane').forEach(pane => {
+                    if (pane !== targetPane) {
+                        pane.classList.remove('show', 'active');
+                    }
+                });
+                tabLinks.forEach(btn => {
+                    if (btn !== e.target) {
+                        btn.classList.remove('active');
+                    }
+                });
+            });
+        });
     });
 
     // Receive responses for chats after results are ready
@@ -346,6 +414,15 @@ document.addEventListener('DOMContentLoaded', function() {
             tabsCol.classList.add('d-none');
         }
         document.getElementById('main-column').className = 'col-md-12';
+    });
+
+    // Hide the event log when the pipeline is cancelled
+    socket.on('pipeline_cancelled', function() {
+        if (logColumn) {
+            logColumn.classList.add('d-none');
+            progressLogContainer.style.display = 'none';
+            logShown = false;
+        }
     });
 
 

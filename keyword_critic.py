@@ -55,7 +55,7 @@ def critique_list(
     try:
         model_instance = genai.GenerativeModel("gemini-2.5-flash-preview-04-17")
         resp = model_instance.generate_content(contents=prompt)
-        time.sleep(2)
+        time.sleep(5)
         raw = resp.text
         data = _extract_json(raw)
     except Exception as e:
