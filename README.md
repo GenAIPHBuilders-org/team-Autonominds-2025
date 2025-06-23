@@ -233,10 +233,11 @@ graph TD
    ```python
    pip install python-dotenv google-genai requests feedparser transformers torch numpy scikit-learn joblib flask flask-socketio
    ```
-4. **Set up your Gemini API key
-   Create a .env file in the project root with your Gemini API key:**
+4. **Set up your Gemini API key and CrossRef contact email**
+   Create a `.env` file in the project root with:
    ```
    GEMINI_API_KEY=your_api_key_here
+   CROSSREF_CONTACT_EMAIL=you@example.com
    ```
 
 ## 🚀 Usage

@@ -23,9 +23,13 @@
                 <div class="tab-content" id="results-tab-content">
                     <div class="tab-pane fade show active" id="pane-general" role="tabpanel" aria-labelledby="tab-general">
                         <div id="chat-messages" class="chat-container mb-3">
-                            <div class="message bot">
-                                <div class="message-content">
-                                    Welcome to Authematic! Please provide your research title to begin.
+
+                            <div class="chat-history" style="height: 100%; overflow-y: auto;">
+
+                                <div class="message bot">
+                                    <div class="message-content">
+                                        Welcome to Authematic! Please provide your research title to begin.
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -44,12 +48,12 @@
     <div id="log-column" class="col-md-3 d-none">
         <div class="card sticky-top" style="top: 20px;">
             <div class="card-header">
-                <h6 class="mb-0">Event Log</h6>
+                <h6 class="mb-0 text-white">Event Log</h6>
             </div>
             <div class="card-body">
                 <details id="progress-log-container" style="display: none;">
                     <summary>View Live Progress Log</summary>
-                    <div id="progress-log" class="p-3 bg-light border rounded" style="max-height: 70vh; overflow-y: auto; font-size: 0.85rem; line-height: 1.5;"></div>
+                    <div id="progress-log" class="p-3 bg-light border rounded" style="overflow-y: auto; font-size: 0.85rem; line-height: 1.5;"></div>
                 </details>
             </div>
         </div>

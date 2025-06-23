@@ -33,7 +33,7 @@ Your Output:
     """
 
     try:
-        model = genai.GenerativeModel("gemini-2.5-flash-preview-04-17")
+        model = genai.GenerativeModel("gemini-2.0-flash")
         response = model.generate_content(contents=prompt)
         output = response.text.strip()
 

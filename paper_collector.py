@@ -10,6 +10,8 @@ from typing import Dict, List, Any, Tuple, Set, Optional # Added Optional for ty
 
 # Third-party imports
 import requests # For making HTTP requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import feedparser # For parsing arXiv RSS feeds
 from google.api_core import exceptions as google_exceptions # For Google API specific exceptions
 import google.generativeai as genai
@@ -35,6 +37,41 @@ DEFAULT_PAPER_LIMIT_PER_SOURCE: int = 4
 # Default number of fetch attempts (e.g., pages or offsets) for each keyword.
 DEFAULT_MAX_FETCH_ATTEMPTS: int = 1 # In the provided file, this was 1. Adjusted in collect_papers to 3 default.
 
+# Base delay inserted between successive external API requests
+GLOBAL_API_DELAY_SEC: float = 1.0
+SEMANTIC_SCHOLAR_DELAY_SEC: float = 1.5
+
+# Email used for CrossRef API identification
+CROSSREF_CONTACT_EMAIL = os.getenv("CROSSREF_CONTACT_EMAIL")
+if not CROSSREF_CONTACT_EMAIL:
+    print(
+        "WARNING: CROSSREF_CONTACT_EMAIL not set. Please add it to your .env file for polite CrossRef usage."
+    )
+
+# Build CrossRef User-Agent string
+CROSSREF_USER_AGENT = (
+    f"AuthematicLiteratureCuration/1.0 (mailto:{CROSSREF_CONTACT_EMAIL or 'unknown@example.com'})"
+)
+
+# Simple GET request helper with retry logic
+def request_with_retry(url: str, *, params: Optional[Dict[str, Any]] = None,
+                       headers: Optional[Dict[str, str]] = None,
+                       timeout: int = 20) -> requests.Response:
+    """Make a GET request with retries for transient errors."""
+    session = requests.Session()
+    retry_strategy = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[500, 502, 503, 504],
+        allowed_methods=["GET"],
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    response = session.get(url, params=params, headers=headers, timeout=timeout)
+    time.sleep(GLOBAL_API_DELAY_SEC)
+    return response
+
 # --- Enrichment Helper Functions ---
 
 def fetch_pubmed_abstract(pmid: str) -> str:
@@ -53,6 +90,7 @@ def fetch_pubmed_abstract(pmid: str) -> str:
         resp = requests.get(url, params=params, timeout=15) # Added timeout
         resp.raise_for_status() # Check for HTTP errors
         root = ET.fromstring(resp.text)
+        time.sleep(GLOBAL_API_DELAY_SEC)
         # Concatenate all AbstractText elements found.
         texts = [ab.text.strip() for ab in root.findall(".//AbstractText") if ab.text]
         return " ".join(texts)
@@ -78,10 +116,10 @@ def enrich_crossref(doi: str) -> Dict[str, Any]:
         return {}
     cleaned_doi = doi.replace("https://doi.org/", "").strip()
     url = f"https://api.crossref.org/works/{cleaned_doi}"
-    headers = {"Accept": "application/json", "User-Agent": "AuthematicLiteratureCuration/1.0 (mailto:your_email@example.com)"} # Added User-Agent
-    
+    headers = {"Accept": "application/json", "User-Agent": CROSSREF_USER_AGENT}
+
     try:
-        resp = requests.get(url, headers=headers, timeout=15) # Added timeout
+        resp = request_with_retry(url, headers=headers, timeout=15)
         resp.raise_for_status()
         message = resp.json().get("message", {})
         
@@ -124,6 +162,7 @@ def fetch_s2_details_by_doi(doi: str) -> Optional[Dict[str, Any]]:
     try:
         response = requests.get(url, params=params, timeout=15)
         response.raise_for_status()
+        time.sleep(GLOBAL_API_DELAY_SEC)
         paper_data = response.json()
         
         if paper_data:
@@ -185,7 +224,7 @@ def enrich_with_semantic_scholar(papers: List[Dict[str, Any]]):
                 if updated:
                     enriched_count +=1
             
-            time.sleep(1.5) # Crucial delay to avoid hammering the Semantic Scholar API
+            time.sleep(SEMANTIC_SCHOLAR_DELAY_SEC)  # Polite delay for Semantic Scholar API
         
         if (i + 1) % 50 == 0 and i > 0: # Progress update
             print(f"  Processed {i + 1}/{len(papers)} papers for S2 enrichment...")
@@ -254,7 +293,7 @@ Respond **with just** the four topics, either:
   - **One per line**, OR** - **A single comma-separated list** Avoid bullets, numbering, or extra text.  
 Research Title: {title}"""
     
-    model = genai.GenerativeModel("gemini-2.0-flash")
+    model = genai.GenerativeModel("gemini-2.5-flash-lite-preview-06-17")
     response = model.generate_content(contents=prompt)
     text = response.text.strip()
     
@@ -446,7 +485,8 @@ def search_arxiv(keyword: str, start_index: int = 0, limit: Optional[int] = None
             f"&start={start_index}&max_results={search_limit}"
         )
         # feedparser handles its own HTTP requests; direct timeout not straightforward
-        parsed_feed = feedparser.parse(query_url) 
+        parsed_feed = feedparser.parse(query_url)
+        time.sleep(GLOBAL_API_DELAY_SEC)
         
         for entry in parsed_feed.entries:
             arxiv_doi = getattr(entry, 'arxiv_doi', None) # Preferred DOI if available
@@ -496,11 +536,10 @@ def search_crossref(keyword: str, offset: int = 0, limit: Optional[int] = None) 
             "sort": "relevance",
             "order": "desc"
         }
-        headers = { # Polite API usage: identify your application
-            "User-Agent": "AuthematicLiteratureCuration/1.0 (mailto:your_project_email@example.com)"
-        }
-        
-        response = requests.get(base_url, params=params, headers=headers, timeout=20)
+
+        headers = {"User-Agent": CROSSREF_USER_AGENT}
+
+        response = request_with_retry(base_url, params=params, headers=headers, timeout=20)
         response.raise_for_status() # Raise an exception for HTTP errors
         
         items = response.json().get("message", {}).get("items", [])
@@ -566,6 +605,7 @@ def search_pubmed(keyword: str, offset: int = 0, limit: Optional[int] = None) ->
         }
         search_resp = requests.get(esearch_url, params=search_params, timeout=20)
         search_resp.raise_for_status()
+        time.sleep(GLOBAL_API_DELAY_SEC)
         search_data = search_resp.json()
         pmids_list = search_data.get("esearchresult", {}).get("idlist", [])
 
@@ -576,6 +616,7 @@ def search_pubmed(keyword: str, offset: int = 0, limit: Optional[int] = None) ->
         summary_params = {"db": "pubmed", "id": ",".join(pmids_list), "retmode": "json"}
         summary_resp = requests.get(esummary_url, params=summary_params, timeout=20)
         summary_resp.raise_for_status()
+        time.sleep(GLOBAL_API_DELAY_SEC)
         summary_data = summary_resp.json()
         
         for pmid_str in pmids_list:
@@ -787,7 +828,7 @@ def collect_papers(
                     break # Break from the keywords loop for this attempt, as the bucket is full.
                 
                 # Brief pause after each keyword's batch of API calls to be polite to external APIs
-                time.sleep(1) # Adjusted from 1.5 to 1, can be tuned.
+                time.sleep(GLOBAL_API_DELAY_SEC)
             
             # After iterating through all keywords for the current attempt:
             if len(papers_collected_for_bucket) >= min_papers_per_bucket:
