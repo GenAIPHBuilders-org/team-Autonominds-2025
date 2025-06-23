@@ -1,0 +1,16 @@
+flask
+flask-socketio
+python-dotenv
+google-generativeai
+requests
+feedparser
+transformers
+torch
+numpy
+scikit-learn
+joblib
+chromadb
+tiktoken
+gunicorn
+google-cloud-firestore
+protobuf==3.20.3
